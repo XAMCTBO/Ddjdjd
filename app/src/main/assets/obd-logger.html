@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>OBD Live Logger</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#131a22; --panel2:#182230; --line:#24303d;
+    --txt:#e7edf3; --muted:#8aa0b2; --accent:#3bd1a0; --warn:#ffb020; --bad:#ff5a5f;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    padding-bottom:40px;
+  }
+  header{
+    padding:14px 16px 10px; position:sticky; top:0; background:var(--bg); z-index:5;
+    border-bottom:1px solid var(--line);
+  }
+  h1{font-size:17px; margin:0 0 2px;}
+  .sub{color:var(--muted); font-size:12px;}
+  .status-row{display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap;}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--bad); flex:0 0 auto;}
+  .dot.ok{background:var(--accent);}
+  .dot.warn{background:var(--warn);}
+  #statusText{font-size:13px; color:var(--muted);}
+  button{
+    font-size:14px; padding:10px 14px; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel2); color:var(--txt); font-weight:600;
+  }
+  button.primary{background:var(--accent); color:#032018; border-color:var(--accent);}
+  button.danger{background:var(--bad); color:#210003; border-color:var(--bad);}
+  button:disabled{opacity:.45;}
+  button:active{transform:scale(0.98);}
+  main{padding:14px 16px; max-width:720px; margin:0 auto;}
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:14px; margin-bottom:14px;
+  }
+  .panel h2{font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px;}
+  .gauges{display:grid; grid-template-columns:repeat(2,1fr); gap:10px;}
+  .gauge{
+    background:var(--panel2); border-radius:12px; padding:12px; text-align:center;
+    border:1px solid var(--line);
+  }
+  .gauge .val{font-size:30px; font-weight:700; line-height:1.1;}
+  .gauge .unit{font-size:12px; color:var(--muted);}
+  .gauge .lbl{font-size:12px; color:var(--muted); margin-top:4px;}
+  .gauge.big{grid-column:span 2;}
+  .gauge.big .val{font-size:46px;}
+  .flagged .val{color:var(--warn);}
+  canvas{width:100%; height:70px; display:block; margin-top:8px;}
+  .row{display:flex; gap:10px; flex-wrap:wrap;}
+  .row > *{flex:1;}
+  .stat{font-size:12px; color:var(--muted); display:flex; justify-content:space-between; margin:3px 0;}
+  .stat b{color:var(--txt); font-weight:600;}
+  textarea{
+    width:100%; height:90px; background:#05080b; color:#8ee6c3; border:1px solid var(--line);
+    border-radius:8px; font-family:monospace; font-size:11px; padding:8px; resize:vertical;
+  }
+  .note{font-size:12px; color:var(--muted); line-height:1.5;}
+  details summary{cursor:pointer; font-size:13px; color:var(--muted); margin-bottom:8px;}
+  select, input[type=text], input[type=password]{
+    background:var(--panel2); color:var(--txt); border:1px solid var(--line); border-radius:8px;
+    padding:8px; font-size:13px; width:100%;
+  }
+  .warnbox{
+    background:#2a1f08; border:1px solid #5a4418; color:#ffd58a; border-radius:10px;
+    padding:10px 12px; font-size:12.5px; margin-bottom:14px; line-height:1.5;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>OBD Live Logger</h1>
+  <div class="sub">Generic Bluetooth LE OBD-II reader · local recording</div>
+  <div class="status-row">
+    <div class="dot" id="dot"></div>
+    <span id="statusText">Not connected</span>
+  </div>
+</header>
+
+<main>
+
+  <div class="warnbox">
+    Don't operate this screen while driving. Connect before you set off, mount the phone, and let a passenger watch it on the move.
+  </div>
+
+  <div class="panel">
+    <h2>Connection</h2>
+    <div class="row">
+      <button class="primary" id="btnConnect">Connect to OBD adapter</button>
+      <button class="danger" id="btnDisconnect" disabled>Disconnect</button>
+    </div>
+    <div id="deviceList" style="margin-top:10px; display:none;"></div>
+    <details style="margin-top:10px;">
+      <summary>Troubleshooting / advanced</summary>
+      <p class="note">
+        This page talks to BLE OBD-II adapters that expose a UART-style service
+        (the common Nordic UART profile used by most generic ELM327 BLE clones, e.g. Vgate iCar Pro BLE,
+        Veepeak, many unbranded dongles). If your adapter uses a different service, connection will fail
+        with an error below — tell Claude the adapter model and the error text.
+      </p>
+      <div id="log" class="note" style="white-space:pre-wrap; max-height:120px; overflow:auto; background:#05080b; padding:8px; border-radius:8px; margin-top:6px;"></div>
+    </details>
+  </div>
+
+  <div class="panel">
+    <h2>Live data</h2>
+    <div class="gauges">
+      <div class="gauge big" id="g-speed"><div class="val" id="v-speed">--</div><div class="unit">km/h · Speed</div></div>
+      <div class="gauge big" id="g-rpm"><div class="val" id="v-rpm">--</div><div class="unit">rpm · Engine speed</div></div>
+      <div class="gauge" id="g-coolant"><div class="val" id="v-coolant">--</div><div class="lbl">Coolant °C</div></div>
+      <div class="gauge" id="g-load"><div class="val" id="v-load">--</div><div class="lbl">Engine load %</div></div>
+      <div class="gauge" id="g-throttle"><div class="val" id="v-throttle">--</div><div class="lbl">Throttle %</div></div>
+      <div class="gauge" id="g-intake"><div class="val" id="v-intake">--</div><div class="lbl">Intake air °C</div></div>
+      <div class="gauge" id="g-stft"><div class="val" id="v-stft">--</div><div class="lbl">Short fuel trim %</div></div>
+      <div class="gauge" id="g-ltft"><div class="val" id="v-ltft">--</div><div class="lbl">Long fuel trim %</div></div>
+    </div>
+    <canvas id="chart" width="600" height="140"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>Recording</h2>
+    <div class="row">
+      <button class="primary" id="btnRecord" disabled>Start recording</button>
+      <button class="danger" id="btnStop" disabled>Stop</button>
+    </div>
+    <div style="margin-top:10px;">
+      <div class="stat"><span>Status</span><b id="recStatus">Idle</b></div>
+      <div class="stat"><span>Duration</span><b id="recDur">00:00</b></div>
+      <div class="stat"><span>Readings captured</span><b id="recCount">0</b></div>
+      <div class="stat"><span>Fault codes seen</span><b id="recDtc">—</b></div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <button id="btnExportCsv" disabled>Download CSV</button>
+      <button id="btnExportJson" disabled>Download JSON</button>
+    </div>
+    <p class="note" style="margin-top:8px;">
+      After the drive, download the file and send it in your chat with Claude — paste the CSV directly for a short
+      trip, or attach the file for a longer one. Recording also autosaves to this phone's browser storage every
+      few seconds, so a dropped connection or a backgrounded tab won't lose the drive — reopen this page and use
+      "Recover last recording" below if that happens.
+    </p>
+    <button id="btnRecover" style="margin-top:4px;">Recover last recording</button>
+  </div>
+
+  <div class="panel">
+    <h2>Cloud sync (optional — makes the drive watchable live)</h2>
+    <p class="note" style="margin-top:0;">
+      Set this up once. While recording, readings are also pushed to your own server every couple
+      of seconds, so the dashboard page — or Claude, directly — can see the drive as it happens.
+      Local recording and export above keep working with or without this.
+    </p>
+    <input id="cloudBase" type="text" placeholder="https://yoursite.com/obd/api/" style="margin-bottom:8px;">
+    <input id="cloudToken" type="password" placeholder="Access token (from setup.php)" style="margin-bottom:8px;">
+    <div class="row">
+      <button id="btnCloudSave">Save</button>
+      <span id="cloudStatus" class="note" style="align-self:center;">Not configured</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Raw log (for troubleshooting)</h2>
+    <textarea id="rawLog" readonly></textarea>
+  </div>
+
+</main>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const dot = $('dot'), statusText = $('statusText'), logBox = $('log'), rawLog = $('rawLog');
+
+  function setStatus(text, state){
+    statusText.textContent = text;
+    dot.className = 'dot' + (state ? ' ' + state : '');
+  }
+  function logLine(s){
+    const t = new Date().toLocaleTimeString();
+    logBox.textContent += `[${t}] ${s}\n`;
+    logBox.scrollTop = logBox.scrollHeight;
+  }
+  function rawLine(s){
+    rawLog.value += s + '\n';
+    rawLog.scrollTop = rawLog.scrollHeight;
+    if (rawLog.value.length > 20000) rawLog.value = rawLog.value.slice(-15000);
+  }
+
+  // ---- Bluetooth / ELM327 layer -------------------------------------------------
+
+  // Known BLE "UART bridge" profiles used by common ELM327-clone OBD dongles.
+  // Tried in order; first match wins. Falls back to a generic scan if none match.
+  const KNOWN_PROFILES = [
+    { // Nordic UART (Veepeak, many generic clones)
+      service: '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
+      tx: '6e400002-b5a3-f393-e0a9-e50e24dcca9e',
+      rx: '6e400003-b5a3-f393-e0a9-e50e24dcca9e'
+    },
+    { // TI CC254x UART bridge (very common in cheap clone dongles)
+      service: '0000fff0-0000-1000-8000-00805f9b34fb',
+      tx: '0000fff2-0000-1000-8000-00805f9b34fb',
+      rx: '0000fff1-0000-1000-8000-00805f9b34fb'
+    },
+    { // Microchip/ISSC transparent UART (also widely used)
+      service: '49535343-1e4d-4bd9-ba61-23c647249616',
+      tx: '49535343-8841-43f4-a8d4-ecbe34729bb3',
+      rx: '49535343-fe7d-4ae5-8fa9-9fafd205e455'
+    }
+  ];
+  const CANDIDATE_SERVICES = KNOWN_PROFILES.map(p => p.service);
+
+  let device=null, server=null, txChar=null, rxChar=null;
+  let rxBuffer = '';
+  let pendingResolve = null;
+  let connected = false;
+
+  // When this page is opened inside the companion Android app, window.AndroidBT
+  // is injected by the native shell and gives us classic Bluetooth (SPP) as well
+  // as a BLE path that isn't limited by what Chrome's Web Bluetooth allows.
+  // In plain Chrome (no app), AndroidBT is absent and we fall back to Web Bluetooth.
+  const NATIVE = !!window.AndroidBT;
+
+  function textEncode(s){ return new TextEncoder().encode(s); }
+  function textDecode(buf){ return new TextDecoder().decode(buf); }
+  function b64FromText(s){ return btoa(unescape(encodeURIComponent(s))); }
+  function textFromB64(b64){ try { return decodeURIComponent(escape(atob(b64))); } catch(e){ return atob(b64); } }
+
+  if (NATIVE){
+    window.onLog = (msg) => logLine('[native] ' + msg);
+    window.onDeviceFound = (name, address, type) => addDeviceRow(name, address, type);
+    window.onConnected = () => {
+      connected = true;
+      $('deviceList').style.display = 'none';
+      setStatus('Connected', 'ok');
+      $('btnConnect').disabled = true;
+      $('btnDisconnect').disabled = false;
+      $('btnRecord').disabled = false;
+      initElm().then(startPolling);
+    };
+    window.onConnectError = (msg) => { logLine('Connect error: ' + msg); setStatus('Connection failed', ''); };
+    window.onDisconnected = () => onDisconnected();
+    window.onData = (b64) => {
+      const chunk = textFromB64(b64);
+      rawLine('RX: ' + chunk.replace(/\r/g,'\\r').replace(/\n/g,'\\n'));
+      rxBuffer += chunk;
+      if (rxBuffer.includes('>')){
+        const full = rxBuffer; rxBuffer = '';
+        if (pendingResolve){ const r = pendingResolve; pendingResolve = null; r(full); }
+      }
+    };
+  }
+
+  function addDeviceRow(name, address, type){
+    const list = $('deviceList');
+    if ([...list.children].some(el => el.dataset.addr === address)) return;
+    const row = document.createElement('button');
+    row.textContent = `${name} (${type.toUpperCase()}) — ${address}`;
+    row.style.display = 'block';
+    row.style.width = '100%';
+    row.style.marginBottom = '6px';
+    row.style.textAlign = 'left';
+    row.dataset.addr = address;
+    row.onclick = () => {
+      AndroidBT.stopScan();
+      logLine('Connecting to ' + name + '…');
+      setStatus('Connecting…', 'warn');
+      if (type === 'classic') AndroidBT.connectClassic(address);
+      else AndroidBT.connectBle(address);
+    };
+    list.appendChild(row);
+  }
+
+  async function connect(){
+    if (NATIVE){
+      if (!AndroidBT.hasPermission()){
+        logLine('Requesting Bluetooth permission…');
+        AndroidBT.requestPermission();
+        return;
+      }
+      $('deviceList').innerHTML = '';
+      $('deviceList').style.display = 'block';
+      setStatus('Scanning…', 'warn');
+      logLine('Scanning — tap your adapter in the list below.');
+      AndroidBT.scan();
+      return;
+    }
+
+    // --- Web Bluetooth path (plain Chrome, no app wrapper) ---
+    try{
+      setStatus('Requesting device…');
+      device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: CANDIDATE_SERVICES
+      });
+      logLine('Selected: ' + (device.name || 'unnamed device'));
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+
+      setStatus('Connecting…', 'warn');
+      server = await device.gatt.connect();
+
+      let service=null;
+      for (const profile of KNOWN_PROFILES){
+        try {
+          service = await server.getPrimaryService(profile.service);
+          if (service){
+            txChar = await service.getCharacteristic(profile.tx);
+            rxChar = await service.getCharacteristic(profile.rx);
+            logLine('Matched known profile: ' + profile.service);
+            break;
+          }
+        } catch(e){ service = null; }
+      }
+      if (!service){
+        // fall back: scan every service for write+notify characteristics
+        const services = await server.getPrimaryServices();
+        for (const s of services){
+          const chars = await s.getCharacteristics();
+          const w = chars.find(c => c.properties.write || c.properties.writeWithoutResponse);
+          const n = chars.find(c => c.properties.notify);
+          if (w && n){ service = s; txChar = w; rxChar = n; logLine('Fell back to generic match: ' + s.uuid); break; }
+        }
+        if (!service) throw new Error('No compatible UART-style service found on this adapter.');
+      }
+
+      await rxChar.startNotifications();
+      rxChar.addEventListener('characteristicvaluechanged', onNotify);
+
+      connected = true;
+      setStatus('Connected: ' + (device.name || 'OBD adapter'), 'ok');
+      $('btnConnect').disabled = true;
+      $('btnDisconnect').disabled = false;
+      $('btnRecord').disabled = false;
+
+      await initElm();
+      startPolling();
+    } catch(err){
+      logLine('Connect failed: ' + err.message);
+      setStatus('Connection failed', '');
+    }
+  }
+
+  function onDisconnected(){
+    connected = false;
+    setStatus('Disconnected', '');
+    $('btnConnect').disabled = false;
+    $('btnDisconnect').disabled = true;
+    $('btnRecord').disabled = true;
+    stopPolling();
+    logLine('Device disconnected.');
+  }
+
+  async function disconnect(){
+    stopPolling();
+    if (NATIVE){ AndroidBT.disconnect(); return; }
+    if (device && device.gatt.connected) device.gatt.disconnect();
+  }
+
+  function onNotify(e){
+    const chunk = textDecode(e.target.value.buffer);
+    rawLine('RX: ' + chunk.replace(/\r/g,'\\r').replace(/\n/g,'\\n'));
+    rxBuffer += chunk;
+    if (rxBuffer.includes('>')){
+      const full = rxBuffer;
+      rxBuffer = '';
+      if (pendingResolve){ const r = pendingResolve; pendingResolve = null; r(full); }
+    }
+  }
+
+  function sendRaw(cmd){
+    return new Promise(async (resolve, reject) => {
+      pendingResolve = resolve;
+      rawLine('TX: ' + cmd);
+      try {
+        if (NATIVE){
+          AndroidBT.write(b64FromText(cmd + '\r'));
+        } else {
+          if (!txChar) return reject(new Error('Not connected'));
+          const data = textEncode(cmd + '\r');
+          if (txChar.properties.writeWithoutResponse) await txChar.writeValueWithoutResponse(data);
+          else await txChar.writeValue(data);
+        }
+      } catch(err){ pendingResolve = null; reject(err); }
+      setTimeout(() => { if (pendingResolve){ pendingResolve=null; resolve(''); } }, 2500);
+    });
+  }
+
+  async function initElm(){
+    logLine('Initialising adapter…');
+    for (const cmd of ['ATZ','ATE0','ATL0','ATS0','ATH0','ATSP0']){
+      await sendRaw(cmd);
+      await sleep(250);
+    }
+    logLine('Adapter ready.');
+  }
+
+  function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+  function parseHexResponse(resp, expectPrefix){
+    // strip prompts/whitespace, keep hex pairs after the PID echo
+    const clean = resp.replace(/>/g,'').replace(/[\r\n]+/g,' ').trim();
+    if (!clean || /NO DATA|ERROR|UNABLE/i.test(clean)) return null;
+    const tokens = clean.split(/\s+/).filter(t => /^[0-9A-Fa-f]{2}$/.test(t));
+    const idx = tokens.findIndex((t,i) => t.toUpperCase()==='41' && tokens[i+1] && tokens[i+1].toUpperCase()===expectPrefix);
+    if (idx === -1) return null;
+    return tokens.slice(idx+2).map(t => parseInt(t,16));
+  }
+
+  const PIDS = [
+    { pid:'0C', name:'rpm',      calc:b => ((b[0]*256)+b[1])/4 },
+    { pid:'0D', name:'speed',    calc:b => b[0] },
+    { pid:'05', name:'coolant',  calc:b => b[0]-40 },
+    { pid:'04', name:'load',     calc:b => Math.round(b[0]*100/255) },
+    { pid:'11', name:'throttle', calc:b => Math.round(b[0]*100/255) },
+    { pid:'0F', name:'intake',   calc:b => b[0]-40 },
+    { pid:'06', name:'stft',     calc:b => Math.round((b[0]-128)*100/128) },
+    { pid:'07', name:'ltft',     calc:b => Math.round((b[0]-128)*100/128) },
+  ];
+
+  let pollTimer = null, pidIndex = 0;
+  const latest = {};
+  const history = { speed:[], rpm:[] };
+
+  function startPolling(){
+    pidIndex = 0;
+    pollTimer = setInterval(pollNext, 300);
+  }
+  function stopPolling(){
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  async function pollNext(){
+    if (!connected) return;
+    const p = PIDS[pidIndex];
+    pidIndex = (pidIndex + 1) % PIDS.length;
+    try {
+      const resp = await sendRaw('01' + p.pid);
+      const bytes = parseHexResponse(resp, p.pid);
+      if (bytes){
+        const val = p.calc(bytes);
+        latest[p.name] = val;
+        updateGauge(p.name, val);
+        if (p.name === 'speed' || p.name === 'rpm'){
+          history[p.name].push(val);
+          if (history[p.name].length > 90) history[p.name].shift();
+          drawChart();
+        }
+      }
+    } catch(err){ /* skip this cycle */ }
+
+    if (recording){
+      sampleAccum[p.name] = latest[p.name];
+      maybeCommitSample();
+    }
+  }
+
+  function updateGauge(name, val){
+    const el = $('v-' + name);
+    if (el) el.textContent = (val===undefined||val===null||Number.isNaN(val)) ? '--' : val;
+  }
+
+  function drawChart(){
+    const c = $('chart'); const ctx = c.getContext('2d');
+    const w = c.width, h = c.height;
+    ctx.clearRect(0,0,w,h);
+    ctx.font = '10px sans-serif';
+    plotSeries(history.rpm, '#3bd1a0', 0, 8000, 'RPM');
+    plotSeries(history.speed, '#ffb020', 0, 180, 'km/h');
+
+    function plotSeries(arr, color, min, max, label){
+      if (arr.length < 2) return;
+      ctx.beginPath();
+      arr.forEach((v,i) => {
+        const x = (i/(arr.length-1)) * w;
+        const y = h - ((v-min)/(max-min)) * h;
+        i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+      });
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+    }
+  }
+
+  // ---- Recording -----------------------------------------------------------
+
+  let recording = false, recStart = null, samples = [], sampleAccum = {}, durTimer = null;
+  const STORAGE_KEY = 'obdlogger_last_recording_v1';
+
+  // ---- Cloud sync (optional) -------------------------------------------------
+  let cloudBase = localStorage.getItem('obd_cloud_base') || '';
+  let cloudToken = localStorage.getItem('obd_cloud_token') || '';
+  let cloudSessionId = null;
+  let pendingUpload = [];
+  let cloudSyncTimer = null;
+
+  function cloudConfigured(){ return !!(cloudBase && cloudToken); }
+
+  function refreshCloudStatusLabel(){
+    $('cloudStatus').textContent = cloudConfigured()
+      ? (cloudSessionId ? ('Syncing — session #' + cloudSessionId) : 'Configured — will start a session on record')
+      : 'Not configured';
+  }
+
+  $('cloudBase').value = cloudBase;
+  $('cloudToken').value = cloudToken;
+  refreshCloudStatusLabel();
+
+  $('btnCloudSave').onclick = () => {
+    cloudBase = $('cloudBase').value.trim().replace(/\/?$/, '/');
+    cloudToken = $('cloudToken').value.trim();
+    localStorage.setItem('obd_cloud_base', cloudBase);
+    localStorage.setItem('obd_cloud_token', cloudToken);
+    refreshCloudStatusLabel();
+    logLine(cloudConfigured() ? 'Cloud sync configured.' : 'Cloud sync cleared.');
+  };
+
+  async function cloudStartSession(){
+    if (!cloudConfigured()) return;
+    try {
+      const res = await fetch(cloudBase + 'sessions.php?token=' + encodeURIComponent(cloudToken), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Obd-Token': cloudToken },
+        body: JSON.stringify({ label: 'Drive ' + new Date().toLocaleString() })
+      });
+      const data = await res.json();
+      if (data.id){
+        cloudSessionId = data.id;
+        logLine('Cloud session started: #' + cloudSessionId);
+        cloudSyncTimer = setInterval(cloudFlush, 2000);
+      } else {
+        logLine('Cloud session start failed: ' + JSON.stringify(data));
+      }
+    } catch(e){ logLine('Cloud session start failed: ' + e.message); }
+    refreshCloudStatusLabel();
+  }
+
+  async function cloudFlush(){
+    if (!cloudSessionId || pendingUpload.length === 0) return;
+    const batch = pendingUpload; pendingUpload = [];
+    try {
+      await fetch(cloudBase + 'ingest.php?token=' + encodeURIComponent(cloudToken), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Obd-Token': cloudToken },
+        body: JSON.stringify({ session_id: cloudSessionId, samples: batch })
+      });
+    } catch(e){
+      pendingUpload = batch.concat(pendingUpload); // retry next tick
+      logLine('Cloud sync failed (will retry): ' + e.message);
+    }
+  }
+
+  function cloudStopSession(){
+    if (cloudSyncTimer) clearInterval(cloudSyncTimer);
+    cloudSyncTimer = null;
+    cloudFlush();
+    cloudSessionId = null;
+    refreshCloudStatusLabel();
+  }
+
+  function maybeCommitSample(){
+    // commit once we've refreshed every PID at least once since last commit
+    const have = PIDS.every(p => sampleAccum[p.name] !== undefined);
+    if (!have) return;
+    const row = { t: Date.now() - recStart, ...sampleAccum };
+    samples.push(row);
+    if (cloudConfigured()) pendingUpload.push(row);
+    sampleAccum = {};
+    $('recCount').textContent = samples.length;
+    if (samples.length % 10 === 0) persistRecording();
+  }
+
+  function persistRecording(){
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ startedAt: recStart, samples }));
+    } catch(e){ /* storage full or unavailable - recording continues in memory */ }
+  }
+
+  function startRecording(){
+    recording = true;
+    recStart = Date.now();
+    samples = [];
+    sampleAccum = {};
+    pendingUpload = [];
+    $('recStatus').textContent = 'Recording';
+    $('btnRecord').disabled = true;
+    $('btnStop').disabled = false;
+    $('btnExportCsv').disabled = true;
+    $('btnExportJson').disabled = true;
+    durTimer = setInterval(() => {
+      const s = Math.floor((Date.now()-recStart)/1000);
+      const mm = String(Math.floor(s/60)).padStart(2,'0');
+      const ss = String(s%60).padStart(2,'0');
+      $('recDur').textContent = `${mm}:${ss}`;
+    }, 1000);
+    if (cloudConfigured()) cloudStartSession();
+  }
+
+  function stopRecording(){
+    recording = false;
+    clearInterval(durTimer);
+    cloudStopSession();
+    persistRecording();
+    $('recStatus').textContent = 'Stopped (' + samples.length + ' readings)';
+    $('btnRecord').disabled = false;
+    $('btnStop').disabled = true;
+    $('btnExportCsv').disabled = samples.length === 0;
+    $('btnExportJson').disabled = samples.length === 0;
+  }
+
+  function download(filename, content, mime){
+    const blob = new Blob([content], {type: mime});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  function toCsv(samples){
+    const cols = ['t','speed','rpm','coolant','load','throttle','intake','stft','ltft'];
+    const header = cols.join(',');
+    const lines = samples.map(r => cols.map(c => r[c]===undefined ? '' : r[c]).join(','));
+    return header + '\n' + lines.join('\n');
+  }
+
+  function recoverLast(){
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw){ logLine('No saved recording found.'); return; }
+      const parsed = JSON.parse(raw);
+      samples = parsed.samples || [];
+      recStart = parsed.startedAt;
+      $('recCount').textContent = samples.length;
+      $('recStatus').textContent = 'Recovered (' + samples.length + ' readings)';
+      $('btnExportCsv').disabled = samples.length === 0;
+      $('btnExportJson').disabled = samples.length === 0;
+      logLine('Recovered ' + samples.length + ' readings from this phone\'s storage.');
+    } catch(e){ logLine('Recovery failed: ' + e.message); }
+  }
+
+  // ---- Wire up UI ------------------------------------------------------------
+
+  if (NATIVE){
+    setStatus('Running in app — ready to scan', '');
+  } else if (!navigator.bluetooth){
+    setStatus('Web Bluetooth not available in this browser', '');
+    logLine('This needs Chrome on Android, over HTTPS (not a plain file). Web Bluetooth is not available here.');
+    $('btnConnect').disabled = true;
+  }
+
+  $('btnConnect').onclick = connect;
+  $('btnDisconnect').onclick = disconnect;
+  $('btnRecord').onclick = startRecording;
+  $('btnStop').onclick = stopRecording;
+  $('btnExportCsv').onclick = () => download('obd-drive-' + Date.now() + '.csv', toCsv(samples), 'text/csv');
+  $('btnExportJson').onclick = () => download('obd-drive-' + Date.now() + '.json', JSON.stringify(samples, null, 2), 'application/json');
+  $('btnRecover').onclick = recoverLast;
+
+})();
+</script>
+
+</body>
+</html>
