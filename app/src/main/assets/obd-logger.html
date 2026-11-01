@@ -70,13 +70,19 @@
     background:#2a1f08; border:1px solid #5a4418; color:#ffd58a; border-radius:10px;
     padding:10px 12px; font-size:12.5px; margin-bottom:14px; line-height:1.5;
   }
+  .code-row{display:flex; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); font-size:13px;}
+  .code-row b{min-width:60px;}
+  .sev{font-size:11px; padding:1px 7px; border-radius:5px; color:#000; font-weight:700;}
+  .sev.low{background:#7bd88f}.sev.medium{background:var(--warn)}.sev.high{background:#ff8a50}.sev.critical{background:var(--bad)}
+  #chatLog{height:220px; overflow:auto; background:#05080b; border-radius:8px; padding:8px; font-size:13px; margin-bottom:8px;}
+  .msg{margin:6px 0; white-space:pre-wrap;} .msg.user{color:#8ee6c3;} .msg .act{color:var(--warn); font-size:12px;}
 </style>
 </head>
 <body>
 
 <header>
   <h1>OBD Live Logger</h1>
-  <div class="sub">Generic Bluetooth LE OBD-II reader · local recording</div>
+  <div class="sub">Generic OBD-II reader · recording · AI diagnostics</div>
   <div class="status-row">
     <div class="dot" id="dot"></div>
     <span id="statusText">Not connected</span>
@@ -119,8 +125,20 @@
       <div class="gauge" id="g-intake"><div class="val" id="v-intake">--</div><div class="lbl">Intake air °C</div></div>
       <div class="gauge" id="g-stft"><div class="val" id="v-stft">--</div><div class="lbl">Short fuel trim %</div></div>
       <div class="gauge" id="g-ltft"><div class="val" id="v-ltft">--</div><div class="lbl">Long fuel trim %</div></div>
+      <div class="gauge" id="g-voltage"><div class="val" id="v-voltage">--</div><div class="lbl">Voltage V</div></div>
+      <div class="gauge" id="g-maf"><div class="val" id="v-maf">--</div><div class="lbl">MAF g/s</div></div>
     </div>
     <canvas id="chart" width="600" height="140"></canvas>
+  </div>
+
+  <div class="panel" id="diagPanel">
+    <h2>Diagnostics</h2>
+    <div class="row">
+      <button class="primary" id="btnScan" disabled>Scan codes</button>
+      <button class="danger" id="btnClear" disabled>Clear codes…</button>
+    </div>
+    <div id="scanOut" class="note" style="margin-top:10px;">Connect, then scan. Reads stored, pending and permanent codes, freeze frame, readiness monitors and VIN. Reading is passive and safe.</div>
+    <div id="aiOut" style="margin-top:10px;"></div>
   </div>
 
   <div class="panel">
@@ -146,6 +164,31 @@
       "Recover last recording" below if that happens.
     </p>
     <button id="btnRecover" style="margin-top:4px;">Recover last recording</button>
+  </div>
+
+  <div class="panel" id="aiPanel">
+    <h2>AI diagnostics</h2>
+    <p class="note" style="margin-top:0;">
+      Connects to your OBD AI server (the <code>ai-server/</code> folder in this project). Scans are explained by the
+      DTC Analyzer and Recommendation agents, recordings feed the Prediction agent, and you can chat with the AI mechanic.
+    </p>
+    <input id="aiBase" type="text" placeholder="https://your-server:8787" style="margin-bottom:8px;">
+    <input id="aiToken" type="password" placeholder="Access token (create one in the web panel)" style="margin-bottom:8px;">
+    <div class="row" style="margin-bottom:8px;">
+      <input id="vMake" type="text" placeholder="Make"><input id="vModel" type="text" placeholder="Model"><input id="vYear" type="text" placeholder="Year">
+    </div>
+    <div class="row">
+      <button id="btnAiSave">Save</button>
+      <span id="aiStatus" class="note" style="align-self:center;">Not configured</span>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <button id="btnPredict" disabled>Predictions</button>
+      <button id="btnReport" disabled>Report (PDF)</button>
+    </div>
+    <div id="predOut" class="note" style="margin-top:8px;"></div>
+    <h2 style="margin-top:14px;">Ask the AI mechanic</h2>
+    <div id="chatLog"></div>
+    <div class="row"><input id="chatIn" type="text" placeholder="e.g. my car dies at the stop light"><button class="primary" id="btnChat" style="flex:0 0 auto;" disabled>Send</button></div>
   </div>
 
   <div class="panel">
@@ -240,6 +283,7 @@
       $('btnDisconnect').disabled = false;
       $('btnRecord').disabled = false;
       initElm().then(startPolling);
+      refreshAiButtons();
     };
     window.onConnectError = (msg) => { logLine('Connect error: ' + msg); setStatus('Connection failed', ''); };
     window.onDisconnected = () => onDisconnected();
@@ -337,6 +381,7 @@
 
       await initElm();
       startPolling();
+      refreshAiButtons();
     } catch(err){
       logLine('Connect failed: ' + err.message);
       setStatus('Connection failed', '');
@@ -349,6 +394,8 @@
     $('btnConnect').disabled = false;
     $('btnDisconnect').disabled = true;
     $('btnRecord').disabled = true;
+    $('btnScan').disabled = true;
+    $('btnClear').disabled = true;
     stopPolling();
     logLine('Device disconnected.');
   }
@@ -370,7 +417,7 @@
     }
   }
 
-  function sendRaw(cmd){
+  function sendRaw(cmd, timeoutMs){
     return new Promise(async (resolve, reject) => {
       pendingResolve = resolve;
       rawLine('TX: ' + cmd);
@@ -384,32 +431,59 @@
           else await txChar.writeValue(data);
         }
       } catch(err){ pendingResolve = null; reject(err); }
-      setTimeout(() => { if (pendingResolve){ pendingResolve=null; resolve(''); } }, 2500);
+      // only time out *this* command - a stale timer must not resolve a later command with ''
+      setTimeout(() => { if (pendingResolve === resolve){ pendingResolve=null; resolve(''); } }, timeoutMs || 2500);
     });
+  }
+
+  // Every adapter command goes through this queue so a code scan never interleaves with live polling.
+  let cmdQueue = Promise.resolve();
+  function sendCmd(cmd, timeoutMs){
+    const run = cmdQueue.then(() => sendRaw(cmd, timeoutMs));
+    cmdQueue = run.catch(() => {});
+    return run;
   }
 
   async function initElm(){
     logLine('Initialising adapter…');
     for (const cmd of ['ATZ','ATE0','ATL0','ATS0','ATH0','ATSP0']){
-      await sendRaw(cmd);
+      await sendCmd(cmd);
       await sleep(250);
     }
-    logLine('Adapter ready.');
+    // first OBD request triggers protocol search (can take a while), then keep only supported PIDs
+    const supported = new Set();
+    for (const base of ['00','20','40']){
+      const resp = await sendCmd('01' + base, 8000);
+      const b = parseHexResponse(resp, base);
+      if (!b || b.length < 4) break;
+      const bits = ((b[0]<<24)|(b[1]<<16)|(b[2]<<8)|b[3]) >>> 0;
+      for (let i = 0; i < 32; i++) if (bits & (1 << (31-i))) supported.add(parseInt(base,16) + i + 1);
+      if (!(bits & 1)) break; // next range not supported
+    }
+    if (supported.size){
+      const before = PIDS.length;
+      PIDS = PIDS.filter(p => supported.has(parseInt(p.pid,16)));
+      logLine(`Adapter ready. ${PIDS.length}/${before} live PIDs supported by this car.`);
+    } else {
+      logLine('Adapter ready (could not read supported-PID list; polling all).');
+    }
+    $('btnScan').disabled = false;
+    $('btnClear').disabled = false;
   }
 
   function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
   function parseHexResponse(resp, expectPrefix){
-    // strip prompts/whitespace, keep hex pairs after the PID echo
-    const clean = resp.replace(/>/g,'').replace(/[\r\n]+/g,' ').trim();
-    if (!clean || /NO DATA|ERROR|UNABLE/i.test(clean)) return null;
-    const tokens = clean.split(/\s+/).filter(t => /^[0-9A-Fa-f]{2}$/.test(t));
-    const idx = tokens.findIndex((t,i) => t.toUpperCase()==='41' && tokens[i+1] && tokens[i+1].toUpperCase()===expectPrefix);
+    // Works with spaces on or off (initElm sends ATS0, so most adapters reply "410C1AF8").
+    if (!resp || /NO DATA|ERROR|UNABLE/i.test(resp)) return null;
+    const bytes = hexBytes(resp);
+    const pid = parseInt(expectPrefix, 16);
+    const idx = bytes.findIndex((b,i) => b === 0x41 && bytes[i+1] === pid);
     if (idx === -1) return null;
-    return tokens.slice(idx+2).map(t => parseInt(t,16));
+    return bytes.slice(idx+2);
   }
 
-  const PIDS = [
+  let PIDS = [
     { pid:'0C', name:'rpm',      calc:b => ((b[0]*256)+b[1])/4 },
     { pid:'0D', name:'speed',    calc:b => b[0] },
     { pid:'05', name:'coolant',  calc:b => b[0]-40 },
@@ -418,6 +492,10 @@
     { pid:'0F', name:'intake',   calc:b => b[0]-40 },
     { pid:'06', name:'stft',     calc:b => Math.round((b[0]-128)*100/128) },
     { pid:'07', name:'ltft',     calc:b => Math.round((b[0]-128)*100/128) },
+    { pid:'42', name:'voltage',  calc:b => Math.round(((b[0]*256)+b[1])/10)/100 },
+    { pid:'10', name:'maf',      calc:b => Math.round(((b[0]*256)+b[1]))/100 },
+    { pid:'14', name:'o2_b1s1',  calc:b => b[0]/200 },
+    { pid:'15', name:'o2_b1s2',  calc:b => b[0]/200 },
   ];
 
   let pollTimer = null, pidIndex = 0;
@@ -433,12 +511,14 @@
     pollTimer = null;
   }
 
+  let pollBusy = false, scanning = false;
   async function pollNext(){
-    if (!connected) return;
-    const p = PIDS[pidIndex];
+    if (!connected || pollBusy || scanning || !PIDS.length) return;
+    pollBusy = true;
+    const p = PIDS[pidIndex % PIDS.length];
     pidIndex = (pidIndex + 1) % PIDS.length;
     try {
-      const resp = await sendRaw('01' + p.pid);
+      const resp = await sendCmd('01' + p.pid);
       const bytes = parseHexResponse(resp, p.pid);
       if (bytes){
         const val = p.calc(bytes);
@@ -454,13 +534,17 @@
 
     if (recording){
       sampleAccum[p.name] = latest[p.name];
-      maybeCommitSample();
+      if (pidIndex === 0) maybeCommitSample(); // one row per full polling cycle
     }
+    pollBusy = false;
   }
 
   function updateGauge(name, val){
     const el = $('v-' + name);
     if (el) el.textContent = (val===undefined||val===null||Number.isNaN(val)) ? '--' : val;
+    const g = $('g-' + name);
+    if (g && name === 'ltft') g.classList.toggle('flagged', Math.abs(val) >= 10);
+    if (g && name === 'coolant') g.classList.toggle('flagged', val >= 108);
   }
 
   function drawChart(){
@@ -561,8 +645,7 @@
 
   function maybeCommitSample(){
     // commit once we've refreshed every PID at least once since last commit
-    const have = PIDS.every(p => sampleAccum[p.name] !== undefined);
-    if (!have) return;
+    if (!Object.keys(sampleAccum).length) return;
     const row = { t: Date.now() - recStart, ...sampleAccum };
     samples.push(row);
     if (cloudConfigured()) pendingUpload.push(row);
@@ -607,6 +690,7 @@
     $('btnStop').disabled = true;
     $('btnExportCsv').disabled = samples.length === 0;
     $('btnExportJson').disabled = samples.length === 0;
+    if (aiConfigured() && samples.length > 5) aiUploadRecording();
   }
 
   function download(filename, content, mime){
@@ -619,7 +703,7 @@
   }
 
   function toCsv(samples){
-    const cols = ['t','speed','rpm','coolant','load','throttle','intake','stft','ltft'];
+    const cols = ['t','speed','rpm','coolant','load','throttle','intake','stft','ltft','voltage','maf','o2_b1s1','o2_b1s2'];
     const header = cols.join(',');
     const lines = samples.map(r => cols.map(c => r[c]===undefined ? '' : r[c]).join(','));
     return header + '\n' + lines.join('\n');
@@ -639,6 +723,227 @@
       logLine('Recovered ' + samples.length + ' readings from this phone\'s storage.');
     } catch(e){ logLine('Recovery failed: ' + e.message); }
   }
+
+  // ---- Code scan (Modes 01/02/03/07/09/0A) -----------------------------------
+
+  function hexBytes(resp){
+    // strip prompt/noise, ISO-TP frame indexes ("0:") and length lines; keep hex pairs
+    const out = [];
+    resp.replace(/>/g,'').split(/[\r\n]+/).forEach(line => {
+      line = line.trim().replace(/^[0-9A-F]:\s*/i, '').replace(/\s+/g, '');
+      if (/^[0-9A-F]{3}$/i.test(line) || !/^[0-9A-F]+$/i.test(line) || line.length % 2) return;
+      for (let i = 0; i < line.length; i += 2) out.push(parseInt(line.substr(i, 2), 16));
+    });
+    return out;
+  }
+  function dtcName(b1, b2){
+    return 'PCBU'[(b1 >> 6) & 3] + ((b1 >> 4) & 3) + (b1 & 15).toString(16).toUpperCase() + b2.toString(16).toUpperCase().padStart(2,'0');
+  }
+  function localDtcs(resp, sid){
+    const b = hexBytes(resp); const i = b.indexOf(sid);
+    if (i < 0) return [];
+    let d = b.slice(i + 1);
+    if (d.length % 2 === 1 && d[0] * 2 === d.length - 1) d = d.slice(1); // CAN count byte
+    const codes = [];
+    for (let k = 0; k + 1 < d.length; k += 2){
+      if (!d[k] && !d[k+1]) continue;
+      const c = dtcName(d[k], d[k+1]);
+      if (!codes.includes(c)) codes.push(c);
+    }
+    return codes;
+  }
+
+  async function scanCodes(){
+    if (!connected) return;
+    scanning = true;
+    $('btnScan').disabled = true;
+    $('scanOut').textContent = 'Scanning…';
+    const bundle = { supported:{}, freeze:{}, live:{} };
+    try {
+      await cmdQueue;
+      bundle.ati = await sendCmd('ATI');
+      bundle.dpn = await sendCmd('ATDPN');
+      bundle.status = await sendCmd('0101');
+      bundle.stored = await sendCmd('03', 5000);
+      bundle.pending = await sendCmd('07', 5000);
+      bundle.permanent = await sendCmd('0A', 5000);
+      bundle.vin = await sendCmd('0902', 5000);
+      for (const base of ['00','20','40']) bundle.supported[base] = await sendCmd('01' + base);
+      for (const pid of ['02','03','04','05','06','07','0B','0C','0D','0F','10','11','42'])
+        bundle.freeze[pid] = await sendCmd('02' + pid + '00');
+      for (const pid of ['05','06','07','0C','10','1F','21','30','31','33','42','46','4D','4E'])
+        bundle.live[pid] = await sendCmd('01' + pid);
+      lastBundle = bundle;
+      const stored = localDtcs(bundle.stored, 0x43), pending = localDtcs(bundle.pending, 0x47), perm = localDtcs(bundle.permanent, 0x4A);
+      const st = hexBytes(bundle.status); const si = st.indexOf(0x41);
+      const mil = si >= 0 && st[si+1] === 0x01 ? !!(st[si+2] & 0x80) : null;
+      $('recDtc').textContent = stored.concat(pending).join(', ') || 'none';
+      $('scanOut').innerHTML = (mil === null ? '' : `Check-engine light: <b>${mil ? 'ON' : 'off'}</b><br>`) +
+        `Stored: <b>${stored.join(', ') || 'none'}</b><br>Pending: <b>${pending.join(', ') || 'none'}</b>` +
+        (perm.length ? `<br>Permanent: <b>${perm.join(', ')}</b>` : '') +
+        (aiConfigured() ? '<br><i>Sending to AI for analysis…</i>' : '<br>Set up AI diagnostics below for explanations.');
+      logLine('Scan complete: ' + (stored.concat(pending).join(', ') || 'no codes'));
+      if (aiConfigured()){
+        await aiScan(bundle);
+        $('scanOut').innerHTML = $('scanOut').innerHTML.replace('<i>Sending to AI for analysis…</i>', '<i>AI analysis below.</i>');
+      }
+    } catch(e){
+      $('scanOut').textContent = 'Scan failed: ' + e.message;
+    } finally {
+      scanning = false;
+      $('btnScan').disabled = !connected;
+    }
+  }
+
+  async function clearCodes(){
+    if (!connected) return;
+    if (!confirm('Clearing codes erases stored codes AND their freeze-frame data, and resets all readiness monitors ' +
+                 '(the car will fail an emissions inspection until a full drive cycle). It does NOT fix the fault.\n\n' +
+                 'Save a report first. Continue?')) return;
+    if (!confirm('Engine OFF, ignition ON. Really clear codes now?')) return;
+    scanning = true;
+    try {
+      await cmdQueue;
+      const resp = await sendCmd('04', 5000);
+      const ok = hexBytes(resp).includes(0x44);
+      $('scanOut').textContent = ok ? 'Codes cleared. Monitors are now incomplete; drive normally to let them run.' :
+        'The ECU did not confirm the clear (some cars need ignition ON with engine off). Response: ' + resp.trim();
+      logLine('Clear codes: ' + (ok ? 'OK' : 'not confirmed'));
+    } finally { scanning = false; }
+  }
+
+  // ---- AI server client ------------------------------------------------------
+
+  let aiBase = localStorage.getItem('obd_ai_base') || '';
+  let aiToken = localStorage.getItem('obd_ai_token') || '';
+  let aiVehicleId = localStorage.getItem('obd_ai_vehicle') || null;
+  let lastBundle = null;
+  const SEV = s => `<span class="sev ${s}">${s}</span>`;
+  const esc = x => String(x ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  function aiConfigured(){ return !!(aiBase && aiToken); }
+  function vehicleInfo(){
+    return { make: $('vMake').value.trim() || undefined, model: $('vModel').value.trim() || undefined,
+             year: parseInt($('vYear').value, 10) || undefined };
+  }
+  function refreshAiButtons(){
+    $('aiStatus').textContent = aiConfigured() ? (aiVehicleId ? 'Ready - vehicle #' + aiVehicleId : 'Ready - scan once to register the car') : 'Not configured';
+    const haveVehicle = aiConfigured() && !!aiVehicleId;
+    $('btnPredict').disabled = !haveVehicle;
+    $('btnReport').disabled = !haveVehicle;
+    $('btnChat').disabled = !haveVehicle;
+  }
+  async function aiFetch(path, body){
+    const res = await fetch(aiBase + path, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + aiToken },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  }
+  function rememberVehicle(id){
+    aiVehicleId = String(id);
+    localStorage.setItem('obd_ai_vehicle', aiVehicleId);
+    refreshAiButtons();
+  }
+
+  async function aiScan(bundle){
+    try {
+      const r = await aiFetch('/api/scan', { raw: bundle, vehicle: vehicleInfo(), vehicle_id: aiVehicleId ? +aiVehicleId : undefined });
+      rememberVehicle(r.vehicle_id);
+      renderDiagnosis(r.diagnosis, r.recommendations);
+    } catch(e){ $('aiOut').innerHTML = `<div class="note">AI analysis failed: ${esc(e.message)}</div>`; }
+  }
+
+  function renderDiagnosis(d, recs){
+    const safe = {yes:'Yes', with_caution:'With caution', no:'NO - stop and get help'}[d.safe_to_drive] || d.safe_to_drive;
+    let h = `<div class="note" style="color:var(--txt)">${esc(d.summary)}<br>Safe to drive: <b>${esc(safe)}</b></div>`;
+    h += (d.codes || []).map(c => `<div class="code-row"><b>${esc(c.code)}</b><div>${SEV(c.severity)} ${esc(c.description)}
+      <div class="note">${(c.likely_causes || []).slice(0,3).map(x => esc(x.cause)).join(' · ')}</div></div></div>`).join('');
+    if (d.interactions && d.interactions.length) h += `<div class="note" style="margin-top:6px">${d.interactions.map(esc).join('<br>')}</div>`;
+    if (recs && recs.steps && recs.steps.length){
+      h += '<div class="note" style="margin-top:8px; color:var(--txt)"><b>What to do, cheapest first:</b><ol style="padding-left:18px; margin:4px 0">' +
+        recs.steps.map(s => `<li>${esc(s.title)} <span class="note">${esc(s.est_cost_usd)}</span></li>`).join('') + '</ol>' +
+        esc(recs.when_to_see_mechanic || '') + '</div>';
+    }
+    if (d.note) h += `<div class="note">${esc(d.note)}</div>`;
+    $('aiOut').innerHTML = h;
+  }
+
+  async function aiUploadRecording(){
+    try {
+      const r = await aiFetch('/api/recording', { vehicle_id: aiVehicleId ? +aiVehicleId : undefined, vehicle: vehicleInfo(),
+                                                   samples, started: recStart / 1000 });
+      rememberVehicle(r.vehicle_id);
+      logLine('Recording sent to AI server (session #' + r.session_id + ').');
+    } catch(e){ logLine('Recording upload to AI failed: ' + e.message); }
+  }
+
+  async function aiPredict(){
+    $('predOut').textContent = 'Analysing trends…';
+    try {
+      const p = await aiFetch('/api/vehicles/' + aiVehicleId + '/predictions');
+      $('predOut').innerHTML = esc(p.summary) + (p.components || []).map(c =>
+        `<div class="code-row">${SEV(c.level)}<div><b>${esc(c.component)}</b><div class="note">${esc(c.advice)}` +
+        (c.days_to_threshold ? ` (limit in ~${c.days_to_threshold} days)` : '') + '</div></div></div>').join('');
+    } catch(e){ $('predOut').textContent = e.message; }
+  }
+
+  function aiReport(){
+    const url = `${aiBase}/api/vehicles/${aiVehicleId}/report?mode=owner&lang=${navigator.language.startsWith('uk') ? 'uk' : 'en'}&token=${encodeURIComponent(aiToken)}`;
+    if (window.AndroidApp) AndroidApp.openReport(url); // native screen with Print / Save as PDF
+    else window.open(url, '_blank');
+  }
+
+  function chatMsg(role, text, actions){
+    const d = document.createElement('div');
+    d.className = 'msg ' + role;
+    d.innerHTML = (role === 'user' ? '› ' : '') + esc(text) + (actions || []).filter(a => a.type === 'open_screen')
+      .map(a => `<br><span class="act">→ ${esc(a.label)}: ${esc(a.watch)}</span>`).join('');
+    $('chatLog').appendChild(d);
+    $('chatLog').scrollTop = $('chatLog').scrollHeight;
+  }
+  async function aiChat(){
+    const m = $('chatIn').value.trim();
+    if (!m) return;
+    $('chatIn').value = '';
+    chatMsg('user', m);
+    try {
+      const r = await aiFetch('/api/vehicles/' + aiVehicleId + '/chat', { message: m });
+      chatMsg('ai', r.text, r.actions);
+      (r.actions || []).forEach(a => {
+        if (a.type === 'open_screen'){
+          const target = {live:'g-speed', scan:'diagPanel', record:'btnRecord', ai:'aiPanel', report:'aiPanel'}[a.screen];
+          if (target) $(target).scrollIntoView({behavior:'smooth', block:'center'});
+        }
+      });
+    } catch(e){ chatMsg('ai', 'Error: ' + e.message); }
+  }
+
+  $('aiBase').value = aiBase;
+  $('aiToken').value = aiToken;
+  const savedVehicle = JSON.parse(localStorage.getItem('obd_ai_vinfo') || '{}');
+  $('vMake').value = savedVehicle.make || ''; $('vModel').value = savedVehicle.model || ''; $('vYear').value = savedVehicle.year || '';
+  refreshAiButtons();
+  $('btnAiSave').onclick = () => {
+    aiBase = $('aiBase').value.trim().replace(/\/+$/, '');
+    aiToken = $('aiToken').value.trim();
+    localStorage.setItem('obd_ai_base', aiBase);
+    localStorage.setItem('obd_ai_token', aiToken);
+    localStorage.setItem('obd_ai_vinfo', JSON.stringify(vehicleInfo()));
+    refreshAiButtons();
+    if (aiConfigured()) fetch(aiBase + '/health').then(r => r.json()).then(h =>
+      $('aiStatus').textContent += h.llm ? ' · AI online' : ' · server in knowledge-base mode').catch(() =>
+      $('aiStatus').textContent = 'Server unreachable - check the address');
+  };
+  $('btnScan').onclick = scanCodes;
+  $('btnClear').onclick = clearCodes;
+  $('btnPredict').onclick = aiPredict;
+  $('btnReport').onclick = aiReport;
+  $('btnChat').onclick = aiChat;
+  $('chatIn').onkeydown = e => { if (e.key === 'Enter') aiChat(); };
 
   // ---- Wire up UI ------------------------------------------------------------
 

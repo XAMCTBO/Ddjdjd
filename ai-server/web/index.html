@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OBD AI Diagnostics - web panel</title>
+<style>
+  :root{--bg:#0b0f14;--panel:#131a22;--panel2:#182230;--line:#24303d;--txt:#e7edf3;--muted:#8aa0b2;--accent:#3bd1a0;--warn:#ffb020;--bad:#ff5a5f}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.45 -apple-system,Segoe UI,Roboto,Arial,sans-serif}
+  header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  h1{font-size:17px;margin:0} .muted{color:var(--muted);font-size:12px}
+  main{display:grid;grid-template-columns:280px 1fr;gap:16px;padding:16px 20px;max-width:1200px;margin:0 auto}
+  @media(max-width:800px){main{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+  .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 10px}
+  button{font:600 13px inherit;padding:8px 12px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);cursor:pointer}
+  button.primary{background:var(--accent);color:#032018;border-color:var(--accent)} button:disabled{opacity:.4}
+  input,select,textarea{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit;width:100%}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center} .row>*{flex:1}
+  .veh{padding:8px;border-radius:8px;cursor:pointer;border:1px solid transparent} .veh:hover{background:var(--panel2)} .veh.sel{border-color:var(--accent)}
+  .code{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)} .code b{min-width:62px}
+  .sev{font-size:11px;padding:1px 7px;border-radius:5px;color:#000;font-weight:700}
+  .low{background:#7bd88f}.medium{background:var(--warn)}.high{background:#ff8a50}.critical{background:var(--bad)}
+  #chatlog{height:300px;overflow:auto;background:#05080b;border-radius:8px;padding:10px;margin-bottom:8px}
+  .msg{margin:6px 0;white-space:pre-wrap}.msg.user{color:#8ee6c3}.msg .act{display:inline-block;margin-top:4px;font-size:12px;color:var(--warn)}
+  table{width:100%;border-collapse:collapse;font-size:13px} td,th{border-bottom:1px solid var(--line);padding:5px;text-align:left}
+  pre{white-space:pre-wrap;font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>OBD AI Diagnostics</h1>
+  <span class="muted" id="health">checking server…</span>
+  <span style="flex:1"></span>
+  <span class="muted" id="who"></span>
+</header>
+<main>
+  <div>
+    <div class="panel" id="authPanel">
+      <h2>Account</h2>
+      <input id="token" placeholder="Access token" style="margin-bottom:8px">
+      <div class="row"><button id="btnLogin">Use token</button><button class="primary" id="btnRegister">Create account</button></div>
+      <p class="muted">The same token goes into the phone app's AI settings. Sessions scanned on the phone show up here.</p>
+    </div>
+    <div class="panel">
+      <h2>Vehicles</h2>
+      <div id="vehicles" class="muted">Sign in first.</div>
+      <details style="margin-top:8px"><summary class="muted">Add vehicle</summary>
+        <div class="row" style="margin-top:6px"><input id="vMake" placeholder="Make"><input id="vModel" placeholder="Model"></div>
+        <div class="row" style="margin-top:6px"><input id="vYear" placeholder="Year"><input id="vKm" placeholder="km/day"></div>
+        <button style="margin-top:6px;width:100%" id="btnAddVehicle">Add</button>
+      </details>
+    </div>
+    <div class="panel">
+      <h2>Profile (for recommendations)</h2>
+      <select id="diy"><option value="none">I don't do repairs</option><option value="beginner">Beginner DIY</option>
+        <option value="intermediate">Intermediate DIY</option><option value="advanced">Advanced / mechanic</option></select>
+      <input id="tools" placeholder="Tools you own, comma separated" style="margin-top:8px">
+      <button style="margin-top:8px;width:100%" id="btnProfile">Save profile</button>
+    </div>
+    <div class="panel">
+      <h2>Code lookup</h2>
+      <div class="row"><input id="lookupCode" placeholder="P0420"><button id="btnLookup" style="flex:0">Look up</button></div>
+      <pre id="lookupOut"></pre>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Latest diagnosis</h2>
+      <div id="diagnosis" class="muted">Pick a vehicle.</div>
+      <div class="row" style="margin-top:10px">
+        <select id="repMode"><option value="owner">Owner report</option><option value="mechanic">Mechanic report</option><option value="sale">Pre-purchase report</option></select>
+        <select id="repLang"><option value="en">English</option><option value="uk">Українська</option></select>
+        <button id="btnReport" disabled>Open report (PDF)</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Predictions</h2>
+      <button id="btnPredict" disabled>Run prediction</button>
+      <div id="predictions" class="muted" style="margin-top:8px"></div>
+    </div>
+    <div class="panel">
+      <h2>Chat with the AI mechanic</h2>
+      <div id="chatlog"></div>
+      <div class="row"><input id="chatIn" placeholder="e.g. my car dies at the stop light"><button class="primary" id="btnSend" style="flex:0" disabled>Send</button></div>
+    </div>
+    <div class="panel">
+      <h2>Sessions</h2>
+      <div id="sessions" class="muted"></div>
+      <details style="margin-top:8px"><summary class="muted">Import a recording exported from the phone (JSON)</summary>
+        <input type="file" id="fileIn" accept=".json" style="margin-top:6px">
+      </details>
+    </div>
+  </div>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let token = localStorage.getItem('obdai_token') || '';
+  let vehicleId = null;
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  async function api(path, body){
+    const res = await fetch(path, {method: body ? 'POST' : 'GET',
+      headers: {'Content-Type':'application/json', ...(token ? {Authorization: 'Bearer ' + token} : {})},
+      body: body ? JSON.stringify(body) : undefined});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+  }
+
+  api('/health').then(h => $('health').textContent = h.llm ? `AI online (${h.model}) · ${h.kb_chunks} knowledge chunks` :
+      `Offline mode: knowledge-base answers only (set ANTHROPIC_API_KEY on the server for AI)`).catch(() => $('health').textContent = 'server unreachable');
+
+  async function loadMe(){
+    if (!token) return;
+    try {
+      const me = await api('/api/me');
+      $('token').value = token; localStorage.setItem('obdai_token', token);
+      $('who').textContent = `${me.name || 'user'} · ${me.tier} plan`;
+      $('diy').value = me.profile.diy_level || 'beginner';
+      $('tools').value = (me.profile.tools || []).join(', ');
+      $('vehicles').innerHTML = me.vehicles.length ? '' : 'No vehicles yet: scan from the phone, or add one.';
+      me.vehicles.forEach(v => {
+        const d = document.createElement('div'); d.className = 'veh' + (v.id === vehicleId ? ' sel' : '');
+        const i = v.info || {};
+        d.innerHTML = `<b>${esc([i.year, i.make, i.model].filter(Boolean).join(' ') || 'Vehicle #' + v.id)}</b><div class="muted">${esc(v.vin || 'no VIN yet')}</div>`;
+        d.onclick = () => selectVehicle(v.id);
+        $('vehicles').appendChild(d);
+      });
+      if (!vehicleId && me.vehicles.length) selectVehicle(me.vehicles[me.vehicles.length - 1].id);
+    } catch(e){ $('who').textContent = 'Sign-in failed: ' + e.message; }
+  }
+
+  async function selectVehicle(id){
+    vehicleId = id; ['btnReport','btnPredict','btnSend'].forEach(b => $(b).disabled = false);
+    const data = await api(`/api/vehicles/${id}/sessions`);
+    $('sessions').innerHTML = data.sessions.length ? '<table><tr><th>#</th><th>When</th><th>Codes</th><th>Warm trim</th><th>Coolant max</th></tr>' +
+      data.sessions.slice().reverse().map(s => `<tr><td>${s.id}</td><td>${new Date(s.started*1000).toLocaleString()}</td>
+        <td>${esc((s.scan.all_codes||[]).join(', ') || '-')}</td><td>${s.summary.trim_warm_b1 ?? '-'}</td><td>${s.summary.coolant_max ?? '-'}</td></tr>`).join('') + '</table>'
+      : 'No sessions yet.';
+    if (data.diagnosis) renderDiagnosis(data.diagnosis, data.recommendations);
+    else $('diagnosis').textContent = 'Run a scan from the phone to see a diagnosis here.';
+    $('chatlog').innerHTML = '';
+    loadMe();
+  }
+
+  function renderDiagnosis(d, recs){
+    if (!d) return;
+    $('diagnosis').innerHTML = `<p>${esc(d.summary)} <b>Safe to drive:</b> ${esc(d.safe_to_drive)}</p>` +
+      d.codes.map(c => `<div class="code"><b>${esc(c.code)}</b><div><span class="sev ${c.severity}">${c.severity}</span> ${esc(c.description)}
+        <div class="muted">${c.likely_causes.slice(0,3).map(x => esc(x.cause)).join(' · ')}</div></div></div>`).join('') +
+      (d.interactions?.length ? '<p class="muted">' + d.interactions.map(esc).join('<br>') + '</p>' : '') +
+      (recs?.steps?.length ? '<h3 style="font-size:13px">Action plan</h3><ol>' + recs.steps.map(s => `<li>${esc(s.title)} <span class="muted">${esc(s.est_cost_usd)}</span></li>`).join('') + '</ol>' : '');
+  }
+
+  function addMsg(role, text, actions){
+    const d = document.createElement('div'); d.className = 'msg ' + role;
+    d.innerHTML = (role === 'user' ? '› ' : '') + esc(text) + (actions || []).map(a =>
+      a.type === 'open_screen' ? `<br><span class="act">→ Open "${esc(a.label)}" in the app: ${esc(a.watch)}</span>` :
+      a.type === 'open_report' ? `<br><span class="act">→ Use "Open report" above</span>` : '').join('');
+    $('chatlog').appendChild(d); $('chatlog').scrollTop = 1e9;
+  }
+
+  $('btnRegister').onclick = async () => { const r = await api('/api/register', {name: prompt('Your name (optional)') || ''}); token = r.token; loadMe(); };
+  $('btnLogin').onclick = () => { token = $('token').value.trim(); loadMe(); };
+  $('btnProfile').onclick = () => api('/api/profile', {diy_level: $('diy').value, tools: $('tools').value.split(',').map(s => s.trim()).filter(Boolean)});
+  $('btnAddVehicle').onclick = async () => {
+    const v = await api('/api/vehicles', {make: $('vMake').value, model: $('vModel').value, year: +$('vYear').value || undefined, km_per_day: +$('vKm').value || undefined});
+    selectVehicle(v.id);
+  };
+  $('btnLookup').onclick = async () => {
+    try { const d = await api('/api/dtc/' + $('lookupCode').value.trim().toUpperCase());
+      $('lookupOut').textContent = `${d.code}: ${d.description}\nSeverity: ${d.severity}\nCauses: ${d.likely_causes.join('; ') || '-'}\nChecks: ${d.first_checks.join('; ')}`;
+    } catch(e){ $('lookupOut').textContent = e.message; }
+  };
+  $('btnReport').onclick = () => window.open(`/api/vehicles/${vehicleId}/report?mode=${$('repMode').value}&lang=${$('repLang').value}&token=${encodeURIComponent(token)}`);
+  $('btnPredict').onclick = async () => {
+    try {
+      const p = await api(`/api/vehicles/${vehicleId}/predictions`);
+      $('predictions').innerHTML = `<p>${esc(p.summary)}</p>` + (p.components || []).map(c =>
+        `<div class="code"><span class="sev ${c.level}">${c.level}</span><div><b>${esc(c.component)}</b>
+         <div class="muted">now ${c.current} → limit ${c.threshold}; trend ${c.trend_per_30_days}/30 days${c.days_to_threshold ? `; ~${c.days_to_threshold} days` : ''}${c.km_to_threshold ? ` (~${c.km_to_threshold} km)` : ''}</div>
+         <div>${esc(c.advice)}</div></div></div>`).join('');
+    } catch(e){ $('predictions').textContent = e.message; }
+  };
+  async function send(){
+    const m = $('chatIn').value.trim(); if (!m) return;
+    $('chatIn').value = ''; addMsg('user', m);
+    try { const r = await api(`/api/vehicles/${vehicleId}/chat`, {message: m}); addMsg('ai', r.text, r.actions); }
+    catch(e){ addMsg('ai', 'Error: ' + e.message); }
+  }
+  $('btnSend').onclick = send; $('chatIn').onkeydown = e => { if (e.key === 'Enter') send(); };
+  $('fileIn').onchange = async e => {
+    const f = e.target.files[0]; if (!f || !vehicleId) return;
+    const samples = JSON.parse(await f.text());
+    await api('/api/recording', {vehicle_id: vehicleId, samples: Array.isArray(samples) ? samples : samples.samples, started: f.lastModified / 1000});
+    selectVehicle(vehicleId);
+  };
+  loadMe();
+})();
+</script>
+</body>
+</html>
