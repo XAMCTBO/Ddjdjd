@@ -1,7 +1,9 @@
 package com.newbodymechanics.obdlogger
 
 import android.annotation.SuppressLint
+import android.net.Uri
 import android.os.Bundle
+import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
@@ -39,8 +41,20 @@ class MainActivity : AppCompatActivity() {
 
         val bridge = BtBridge(this, webView)
         webView.addJavascriptInterface(bridge, "AndroidBT")
+        webView.addJavascriptInterface(AppBridge(), "AndroidApp")
 
         webView.loadUrl(LOGGER_URL)
+    }
+
+    /** Small helpers for the page that aren't Bluetooth-related. */
+    inner class AppBridge {
+        /** Opens an AI report in its own screen (with Print / Save as PDF). */
+        @JavascriptInterface
+        fun openReport(url: String) {
+            val scheme = Uri.parse(url).scheme
+            if (scheme != "https" && scheme != "http") return
+            runOnUiThread { ReportActivity.open(this@MainActivity, url) }
+        }
     }
 
     override fun onRequestPermissionsResult(

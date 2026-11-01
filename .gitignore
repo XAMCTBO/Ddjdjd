@@ -4,3 +4,6 @@ app/build/
 *.iml
 .idea/
 local.properties
+__pycache__/
+*.pyc
+*.sqlite
