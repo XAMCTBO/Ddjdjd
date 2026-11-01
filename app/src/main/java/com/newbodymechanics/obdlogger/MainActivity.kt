@@ -1,12 +1,10 @@
 package com.newbodymechanics.obdlogger
 
 import android.annotation.SuppressLint
-import android.os.Bundle
 import android.net.Uri
+import android.os.Bundle
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
-import android.net.Uri
-import android.webkit.JavascriptInterface
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
 
