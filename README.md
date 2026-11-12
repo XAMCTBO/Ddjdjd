@@ -7,6 +7,23 @@ the WebView just loads the latest version next time it opens. The native
 Kotlin code only supplies what a browser can't: classic Bluetooth (SPP)
 and a BLE path that isn't limited by Chrome's Web Bluetooth restrictions.
 
+## AI diagnostics (new)
+
+The app can now explain codes, plan repairs, predict failures, generate PDF reports and chat, backed by a
+self-hosted multi-agent server in [`ai-server/`](ai-server/README.md):
+
+- **Diagnostics panel** - *Scan codes* reads stored, pending and permanent codes, freeze frame, readiness
+  monitors and VIN; *Clear codes* is behind two explicit warnings.
+- **AI diagnostics panel** - set the server address and token once. Scans are explained by the DTC Analyzer and
+  Recommendation agents, finished recordings are uploaded automatically for the Prediction agent, and there's a
+  chat with the AI mechanic. *Report (PDF)* opens a native screen with Print / Save as PDF.
+- Live data now also shows battery voltage and MAF (and records O2 sensors), and only polls PIDs the car
+  actually supports.
+
+Two bugs in the original page were fixed along the way: responses with spaces turned off (`ATS0`, which the page
+itself sets) were never parsed, so the gauges stayed at `--` on most adapters; and a stale command timeout could
+hand a later command an empty reply, shifting every response by one.
+
 ## Why this exists
 
 The Kingbolen Ediag Elite's own app is closed — it won't share live data
@@ -18,18 +35,12 @@ profiles (Nordic UART, TI CC254x, Microchip ISSC) and falls back to classic
 Bluetooth SPP, covering the great majority of cheap/generic OBD dongles —
 branded or not.
 
-## Important limitation — please read
+## Build status
 
-**I was not able to compile or test this project.** This sandbox has no
-internet access to Google's Android SDK/Maven repositories (only a few
-package registries and GitHub are reachable), so there is no `android.jar`,
-build-tools, or `adb` here — nothing to compile or sign an APK with, and
-nothing to catch mistakes before you try it. The source follows the
-standard Android Bluetooth APIs correctly as far as I can tell by reading
-it back, but a first real build may well surface small errors (a missing
-import, a Gradle version mismatch). That is expected — send me the build
-log or `adb logcat` output and I'll fix it from there; this is a normal
-first pass, not a finished product.
+The project compiles: the GitHub Actions workflow builds a debug APK and uploads it as the
+`obd-logger-debug-apk` artifact. It runs on every push to `main`, or on demand from the Actions tab (*Run
+workflow*). It hasn't been tested on a phone with a real adapter yet. If something misbehaves, send the
+`adb logcat` output (see below).
 
 ## Getting an actual installable APK
 
@@ -73,8 +84,10 @@ here. The closest practical equivalent:
 
 ```
 app/src/main/java/com/newbodymechanics/obdlogger/
-  MainActivity.kt   — WebView shell, loads the hosted page, wires up the bridge
+  MainActivity.kt   — WebView shell, loads the hosted page, wires up the bridges
   BtBridge.kt       — classic (RFCOMM/SPP) + BLE (GATT) Bluetooth, exposed to JS as `AndroidBT`
+  ReportActivity.kt — shows AI reports with Print / Save as PDF
+ai-server/          — multi-agent AI diagnostics backend (Python), see ai-server/README.md
 app/src/main/AndroidManifest.xml
 app/src/main/res/   — minimal layout, launcher icon, theme
 .github/workflows/android-build.yml  — CI build (needs a GitHub repo)

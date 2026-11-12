@@ -17,12 +17,17 @@ jobs:
           java-version: '17'
 
       - uses: android-actions/setup-android@v3
+        with:
+          # the default also asks for the removed 'tools' package, which makes sdkmanager fail
+          packages: platform-tools
 
       - name: Install SDK platform + build-tools
         run: |
           sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"   # AGP 8.5.x needs Gradle >= 8.7; there's no wrapper in the repo
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --no-daemon
