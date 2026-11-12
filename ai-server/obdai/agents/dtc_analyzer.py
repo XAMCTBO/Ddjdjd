@@ -56,6 +56,7 @@ Rules:
 - For manufacturer-specific codes (P1xxx, P3xxx, B/C/U 1xxx-2xxx) with no reference definition, say that the exact definition depends on the make. Don't invent one.
 - Brake, ABS, steering and airbag codes are safety-critical: set safe_to_drive to "with_caution" or "no" and require a professional inspection.
 - A code is `recurring` if it appears in the vehicle history from earlier sessions.
+- <bulletin_notes> are the user's own notes on manufacturer service bulletins they checked for this car. If a note applies to a code, rank its fix first and cite it by source and reference. Treat a note marked applies=false as ruled out.
 - Be concise and practical. The reader may be a car owner, not a mechanic."""
 
 
@@ -83,7 +84,8 @@ class DTCAnalyzerAgent:
     def __init__(self, llm: LLM, rag: RAGAgent):
         self.llm, self.rag = llm, rag
 
-    def analyze(self, scan: dict, vehicle: dict | None = None, history: list[dict] | None = None) -> dict:
+    def analyze(self, scan: dict, vehicle: dict | None = None, history: list[dict] | None = None,
+                bulletin_notes: list[dict] | None = None) -> dict:
         codes = _codes_with_status(scan)
         hist = history_codes(history or [])
         if not codes:
@@ -102,6 +104,7 @@ class DTCAnalyzerAgent:
                 f"<history_code_counts>{json.dumps(hist)}</history_code_counts>\n"
                 f"<catalog>{json.dumps(kb)}</catalog>\n"
                 f"<known_interactions>{json.dumps(patterns)}</known_interactions>\n"
+                f"<bulletin_notes>{json.dumps(bulletin_notes or [])}</bulletin_notes>\n"
                 f"<reference>\n{self.rag.context(query, k=8)}\n</reference>\n"
                 "Analyze every code in the scan."
             )
@@ -110,13 +113,13 @@ class DTCAnalyzerAgent:
                 result["engine"] = "llm"
                 return self._enforce_safety(result, kb)
             except LLMError as e:
-                fallback = self._offline(codes, kb, hist, patterns, obs)
+                fallback = self._offline(codes, kb, hist, patterns, obs, bulletin_notes)
                 fallback["note"] = f"AI unavailable ({e}); showing knowledge-base analysis."
                 return fallback
-        return self._offline(codes, kb, hist, patterns, obs)
+        return self._offline(codes, kb, hist, patterns, obs, bulletin_notes)
 
     # ---------------------------------------------------------------- offline
-    def _offline(self, codes, kb, hist, patterns, obs) -> dict:
+    def _offline(self, codes, kb, hist, patterns, obs, bulletin_notes=None) -> dict:
         items = []
         for code, status in codes:
             info = kb[code]
@@ -124,6 +127,18 @@ class DTCAnalyzerAgent:
                        "why": "Most common cause for this code" if i == 0 else "Common cause for this code"}
                       for i, c in enumerate(info["likely_causes"])]
             plan = list(info["first_checks"])
+            ruled_out = []
+            for n in bulletin_notes or []:
+                if code not in n.get("codes", []):
+                    continue
+                ref = " ".join(x for x in (n.get("source"), n.get("reference")) if x)
+                if n.get("applies") is False:
+                    ruled_out.append(f"Bulletin {ref} checked - does not apply")
+                    continue
+                causes.insert(0, {"cause": f"Known issue: {n.get('title') or (n.get('summary') or '')[:80] or ref}",
+                                  "likelihood": "high" if n.get("applies") else "medium",
+                                  "why": f"Your bulletin note ({ref})" + (f": {n['action']}" if n.get("action") else "")})
+            plan += ruled_out
             sev = info["severity"]
             if status == "pending" and sev != "critical":
                 sev = SEVERITY_ORDER[max(0, SEVERITY_ORDER.index(sev) - 1)]

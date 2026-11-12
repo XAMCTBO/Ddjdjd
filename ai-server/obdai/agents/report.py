@@ -23,7 +23,9 @@ T = {
            "sale": "Pre-purchase check", "cleared": "Signs that codes were cleared recently",
            "cleared_yes": "Yes: codes appear to have been cleared recently. Ask the seller why.", "cleared_no": "No signs of a recent code clear.",
            "mil": "Check-engine light", "on": "ON", "off": "off", "protocol": "Protocol", "adapter": "Adapter",
-           "interactions": "How the codes relate", "notes": "Notes", "cost": "Est. cost", "mechanic": "When to see a mechanic"},
+           "interactions": "How the codes relate", "notes": "Notes", "cost": "Est. cost", "mechanic": "When to see a mechanic",
+           "bulletins": "Service bulletins and recalls", "unchecked": "Not yet checked for bulletins",
+           "applies": "applies", "not_applies": "does not apply", "unknown": "not confirmed"},
     "uk": {"title": "Звіт діагностики автомобіля", "vehicle": "Автомобіль", "summary": "Підсумок", "codes": "Коди несправностей",
            "none": "Кодів несправностей не знайдено.", "code": "Код", "status": "Статус", "desc": "Опис", "sev": "Серйозність",
            "causes": "Ймовірні причини", "plan": "Рекомендовані дії", "readiness": "Монітори готовності",
@@ -34,7 +36,9 @@ T = {
            "sale": "Перевірка перед купівлею", "cleared": "Ознаки нещодавнього стирання кодів",
            "cleared_yes": "Так: коди, схоже, нещодавно стирали. Запитайте продавця чому.", "cleared_no": "Ознак нещодавнього стирання кодів немає.",
            "mil": "Лампа Check Engine", "on": "УВІМК.", "off": "вимк.", "protocol": "Протокол", "adapter": "Адаптер",
-           "interactions": "Зв'язок між кодами", "notes": "Примітки", "cost": "Орієнт. вартість", "mechanic": "Коли до механіка"},
+           "interactions": "Зв'язок між кодами", "notes": "Примітки", "cost": "Орієнт. вартість", "mechanic": "Коли до механіка",
+           "bulletins": "Сервісні бюлетені та відкликання", "unchecked": "Ще не перевірено на бюлетені",
+           "applies": "стосується", "not_applies": "не стосується", "unknown": "не підтверджено"},
 }
 SEV_COLOR = {"low": "#2e7d32", "medium": "#ef8f00", "high": "#d84315", "critical": "#b71c1c"}
 
@@ -114,7 +118,7 @@ class ReportAgent:
 
     def render(self, vehicle: dict, session: dict, diagnosis: dict | None, recommendations: dict | None,
                prediction: dict | None, history: list[dict] | None = None,
-               mode: str = "owner", lang: str = "en") -> str:
+               mode: str = "owner", lang: str = "en", bulletin_notes: list[dict] | None = None) -> str:
         t = T.get(lang, T["en"])
         scan = session.get("scan", {})
         info = (vehicle or {}).get("info", {})
@@ -175,6 +179,22 @@ class ReportAgent:
             out.append("</ol>")
             if recommendations.get("when_to_see_mechanic"):
                 out.append(f"<p><b>{_e(t['mechanic'])}:</b> {_e(recommendations['when_to_see_mechanic'])}</p>")
+        # bulletins (the user's own notes; no provider text)
+        bc = (diagnosis or {}).get("bulletin_check") or {}
+        notes = bulletin_notes if bulletin_notes is not None else bc.get("notes") or []
+        noted = {c for n in notes for c in n.get("codes", [])}
+        unchecked = [c["code"] for c in (diagnosis or {}).get("codes", []) if c["code"] not in noted]
+        if notes or unchecked:
+            out.append(f"<h2>{_e(t['bulletins'])}</h2>")
+            if notes:
+                out.append("<table>" + "".join(
+                    f"<tr><td>{_e(n.get('source'))} {_e(n.get('reference'))}</td><td>{_e(', '.join(n.get('codes', [])))}</td>"
+                    f"<td><b>{_e(n.get('title'))}</b> {_e(n.get('summary'))}"
+                    + (f"<br><i>{_e(n.get('action'))}</i>" if n.get('action') else "") + "</td>"
+                    f"<td>{_e(t['applies'] if n.get('applies') else t['not_applies'] if n.get('applies') is False else t['unknown'])}</td></tr>"
+                    for n in notes) + "</table>")
+            if unchecked:
+                out.append(f"<p class='small'>{_e(t['unchecked'])}: {_e(', '.join(unchecked))}</p>")
         # readiness
         if status.get("monitors"):
             out.append(f"<h2>{_e(t['readiness'])}</h2><table>" + "".join(

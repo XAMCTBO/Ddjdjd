@@ -281,3 +281,86 @@ class LLMPathTests(unittest.TestCase):
         res = orch.analyzer.analyze(scan)
         self.assertEqual(res["engine"], "knowledge-base")
         self.assertIn("AI unavailable", res["note"])
+
+
+class BulletinTests(unittest.TestCase):
+    def setUp(self):
+        self.store = Store()
+        self.orch = Orchestrator(self.store)
+        self.token = self.store.create_user("b", "pro")
+        self.user = self.store.user(self.token)
+
+    def scan(self, **vehicle):
+        return self.orch.ingest_scan(self.user, {"raw": BUNDLE, "vehicle": vehicle})
+
+    def test_check_is_part_of_every_diagnosis(self):
+        out = self.scan(make="Ford", model="Focus", year=2016, engine="1.0 EcoBoost", reg="AB16CDE")
+        bc = out["diagnosis"]["bulletin_check"]
+        self.assertEqual(bc["unchecked"], ["P0300", "P0171"])
+        self.assertIn("Ford Focus 2016 1.0 EcoBoost P0300", bc["searches"][0]["query"])
+        self.assertEqual({s["id"] for s in bc["sources"]}, {"alldata_eu", "autodata", "haynespro"})
+        self.assertEqual(bc["recall_check"]["registration"], "AB16CDE")
+        self.assertEqual(out["recommendations"]["steps"][0]["title"], "Check service bulletins and recalls")
+
+    def test_recurring_code_raises_priority(self):
+        first = self.scan(make="Ford")
+        second = self.orch.ingest_scan(self.user, {"raw": BUNDLE, "vehicle_id": first["vehicle_id"]})
+        self.assertEqual(second["diagnosis"]["bulletin_check"]["priority"], "high")
+
+    def test_note_feeds_next_diagnosis_and_report(self):
+        vid = self.scan(make="Ford")["vehicle_id"]
+        self.orch.add_bulletin_note(self.user, vid, {
+            "source": "haynespro", "reference": "TB-123", "title": "Intake manifold gasket leak",
+            "codes": "P0171, P0300", "summary": "Gasket can shrink; replace with revised part.", "applies": True,
+            "action": "Fit revised gasket"})
+        again = self.orch.ingest_scan(self.user, {"raw": BUNDLE, "vehicle_id": vid})
+        diag = again["diagnosis"]
+        self.assertEqual(diag["bulletin_check"]["unchecked"], [])
+        self.assertFalse(diag["bulletin_check"]["recommended"])
+        top = diag["codes"][0]["likely_causes"][0]
+        self.assertIn("Intake manifold gasket leak", top["cause"])
+        self.assertIn("TB-123", top["why"])
+        html = self.orch.report(self.user, vid)
+        self.assertIn("TB-123", html)
+        self.assertNotIn("Not yet checked", html)
+
+    def test_ruled_out_note(self):
+        vid = self.scan(make="Ford")["vehicle_id"]
+        self.orch.add_bulletin_note(self.user, vid, {"source": "autodata", "reference": "X1", "codes": ["P0171"],
+                                                     "title": "Other engine only", "applies": False})
+        diag = self.orch.ingest_scan(self.user, {"raw": BUNDLE, "vehicle_id": vid})["diagnosis"]
+        p0171 = next(c for c in diag["codes"] if c["code"] == "P0171")
+        self.assertTrue(any("does not apply" in s for s in p0171["diagnostic_plan"]))
+        self.assertNotIn("Other engine only", p0171["likely_causes"][0]["cause"])
+
+    def test_note_validation(self):
+        vid = self.scan()["vehicle_id"]
+        with self.assertRaises(ValueError):
+            self.orch.add_bulletin_note(self.user, vid, {"title": "no source"})
+        with self.assertRaises(ValueError):
+            self.orch.add_bulletin_note(self.user, vid, {"source": "alldata_eu", "summary": "x" * 1300})
+        with self.assertRaises(KeyError):  # someone else's vehicle
+            other = self.store.user(self.store.create_user("o", "pro"))
+            self.orch.add_bulletin_note(other, vid, {"source": "dvsa", "title": "t"})
+
+    def test_mcp_and_http(self):
+        vid = self.scan(make="VW")["vehicle_id"]
+        res = mcp.handle(self.orch, self.user, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "record_bulletin_note", "arguments": {"vehicle_id": vid, "source": "alldata_eu",
+                                                          "reference": "A-1", "codes": ["P0300"], "title": "Coil recall"}}})
+        self.assertFalse(res["result"]["isError"])
+        res = mcp.handle(self.orch, self.user, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+            "name": "bulletin_check", "arguments": {"vehicle_id": vid}}})
+        self.assertEqual(json.loads(res["result"]["content"][0]["text"])["unchecked"], ["P0171"])
+
+
+class BulletinHistoryTests(unittest.TestCase):
+    def test_single_scan_is_not_recurring(self):
+        store = Store()
+        orch = Orchestrator(store)
+        user = store.user(store.create_user("h", "pro"))
+        vid = orch.ingest_scan(user, {"raw": BUNDLE, "vehicle": {"make": "Ford"}})["vehicle_id"]
+        bc = orch.bulletin_check(user, vid)
+        self.assertFalse(any("come back" in r for r in bc["reasons"]))
+        orch.ingest_scan(user, {"raw": BUNDLE, "vehicle_id": vid})
+        self.assertTrue(any("come back" in r for r in orch.bulletin_check(user, vid)["reasons"]))

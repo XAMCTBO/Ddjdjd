@@ -44,6 +44,7 @@ Rules:
 - Respect weather: if the ambient temperature is below about 4 °C, warn that EVAP tests and drive-cycle monitors may not run.
 - For brake, ABS, steering or airbag issues, the first step is a professional inspection.
 - Cost estimates are rough ranges in USD, for example "$0-15". Base them on the reference material, not guesses.
+- If the diagnosis has a bulletin_check with unchecked codes, make the first step "Check service bulletins and recalls" for those codes (diy=true, est_cost_usd "$0"). Mention any bulletin notes that already apply.
 - Don't suggest clearing codes as a fix. Suggest it only to confirm a repair, after saving a report."""
 
 
@@ -82,6 +83,15 @@ class RecommendationAgent:
         diy = profile.get("diy_level", "beginner")
         steps, notes = [], []
         codes = diagnosis.get("codes", [])
+        bc = diagnosis.get("bulletin_check") or {}
+        if bc.get("unchecked"):
+            steps.append({"title": "Check service bulletins and recalls",
+                          "detail": "Search your bulletin sources and the DVSA recall check for "
+                                    + ", ".join(bc["unchecked"]) + " on " + bc.get("vehicle", "this vehicle")
+                                    + ". A known fix can save diagnosis time and parts.",
+                          "for_codes": bc["unchecked"], "diy": True, "difficulty": "easy",
+                          "est_cost_usd": "$0", "tools": [],
+                          "confirms": "Whether the manufacturer already knows this fault and has a fix."})
         ordered = sorted(codes, key=lambda c: (c["code"][:4] != "P030", c["code"] not in ("P0171", "P0174", "P0172", "P0175")))
         safety = False
         for c in ordered:

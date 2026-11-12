@@ -27,6 +27,32 @@ and output schema, and only the data it needs.
 | **RAG** (`agents/rag.py`) | BM25 retrieval over `knowledge/articles/*.md`, the DTC catalog, and code-combination patterns. Add your own notes or bulletins via `OBDAI_KB_DIRS`. | No |
 | **Orchestrator** (`orchestrator.py`) | Routes requests (e.g. "What does P0420 mean?" goes straight to a catalog lookup with no model call), gates features by plan tier, enforces per-day limits, and stores every agent's output so later agents can read it. | No |
 
+## "Check bulletins" step
+
+Every diagnosis includes a `bulletin_check`. The phone shows it under the AI analysis, and the web panel shows it
+in **Service bulletins and recalls**:
+
+- a ready-to-paste search for each code ("Ford Focus 2016 1.0 EcoBoost P0300 …"),
+- why a bulletin is likely: the code came back after an earlier scan, it's manufacturer-specific, it points at a
+  control module (software update), or manufacturers often issue bulletins for it,
+- your bulletin sources from `obdai/knowledge/bulletin_sources.json` (ALLDATA Europe, Autodata, HaynesPro) and
+  the free **DVSA recall check**, using the registration number if the vehicle has one,
+- which codes are still unchecked.
+
+When a code is unchecked, the Recommendation agent makes "Check service bulletins and recalls" step 1.
+
+Record what you find in the web panel (or `POST /api/vehicles/{id}/bulletins`, or the `record_bulletin_note` MCP
+tool): source, reference, codes, a short summary **in your own words**, the fix, and whether it applies. Notes are
+capped at 1,200 characters, because full bulletin text belongs to the information provider and their terms don't
+allow copying it out. From then on:
+
+- a note marked *applies* becomes the top likely cause for that code, citing its reference,
+- a note marked *does not apply* is listed as ruled out,
+- notes appear in chat context and in the report.
+
+The server holds no bulletin content itself. To fill in how to reach each source, edit `url` and `how` in
+`bulletin_sources.json`, or point `OBDAI_BULLETIN_SOURCES` at your own copy. Never put passwords there.
+
 ## Run it
 
 ```bash
@@ -70,13 +96,16 @@ All endpoints except `/`, `/health`, `/api/register`, `/api/dtc/*` and `/api/sea
 | POST | `/api/register` | `{name}` → `{token}` |
 | GET | `/api/me` | Profile, tier, and vehicles |
 | POST | `/api/profile` | `{diy_level: none/beginner/intermediate/advanced, tools: [...]}` |
-| POST | `/api/vehicles` | `{make, model, year, odometer_km, km_per_day}` |
+| POST | `/api/vehicles` | `{make, model, year, engine, reg, odometer_km, km_per_day}` |
 | POST | `/api/scan` | `{raw: {ati, dpn, status, stored, pending, permanent, vin, supported, freeze, live}, vehicle, vehicle_id?, samples?}`. Runs OBD Reader, then DTC Analyzer, then Recommendation. |
 | POST | `/api/recording` | `{vehicle_id, samples: [{t, rpm, speed, coolant, stft, ltft, voltage, maf, o2_b1s1, ...}]}` |
 | GET | `/api/vehicles/{id}/sessions` | Session list, latest diagnosis, and recommendations |
 | GET | `/api/vehicles/{id}/predictions` | Prediction agent |
 | GET | `/api/vehicles/{id}/report?mode=owner\|mechanic\|sale&lang=en\|uk&session=` | HTML report |
 | POST | `/api/vehicles/{id}/chat` | `{message}` → `{text, actions}` |
+| GET | `/api/vehicles/{id}/bulletins?codes=` | Bulletin check for the latest scan, or for the given codes |
+| POST | `/api/vehicles/{id}/bulletins` | `{source, reference, title, codes, summary, applies, action}`: save a bulletin note |
+| GET | `/api/bulletin-sources` | Configured bulletin sources and the DVSA recall links |
 | GET | `/api/dtc/{code}` | Catalog lookup |
 | GET | `/api/search?q=` | Knowledge-base search |
 | POST | `/mcp` | MCP (JSON-RPC) endpoint, see below |
@@ -84,7 +113,7 @@ All endpoints except `/`, `/health`, `/api/register`, `/api/dtc/*` and `/api/sea
 ### Use it from Claude (MCP)
 
 `/mcp` serves a minimal Model Context Protocol endpoint. Its tools are `decode_obd_response`, `lookup_dtc`,
-`search_knowledge`, `analyze_codes`, `list_vehicles`, `vehicle_history`, and `predict_failures`. Add it to an MCP
+`search_knowledge`, `analyze_codes`, `list_vehicles`, `vehicle_history`, `bulletin_check`, `record_bulletin_note`, and `predict_failures`. Add it to an MCP
 client as an HTTP server at `https://<server>/mcp` with the header `Authorization: Bearer <token>`. You can then
 ask Claude things like "look at my car's last three sessions and tell me what's trending".
 

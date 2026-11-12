@@ -1,9 +1,12 @@
 package com.newbodymechanics.obdlogger
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
@@ -37,7 +40,23 @@ class MainActivity : AppCompatActivity() {
         webView.settings.allowUniversalAccessFromFileURLs = true
         @Suppress("DEPRECATION")
         webView.settings.allowFileAccessFromFileURLs = true
-        webView.webViewClient = WebViewClient()
+        webView.webViewClient = object : WebViewClient() {
+            // Web links (bulletin sources, DVSA recall check) open in the phone's browser,
+            // so they never replace the logger page and its live Bluetooth session.
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val uri = request.url
+                val isLoggerPage = uri.toString().substringBefore('#') == LOGGER_URL
+                if ((uri.scheme == "http" || uri.scheme == "https") && !isLoggerPage) {
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, uri))
+                    } catch (e: ActivityNotFoundException) {
+                        // no browser installed - ignore the click
+                    }
+                    return true
+                }
+                return false
+            }
+        }
 
         val bridge = BtBridge(this, webView)
         webView.addJavascriptInterface(bridge, "AndroidBT")

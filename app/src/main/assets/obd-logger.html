@@ -177,6 +177,9 @@
     <div class="row" style="margin-bottom:8px;">
       <input id="vMake" type="text" placeholder="Make"><input id="vModel" type="text" placeholder="Model"><input id="vYear" type="text" placeholder="Year">
     </div>
+    <div class="row" style="margin-bottom:8px;">
+      <input id="vEngine" type="text" placeholder="Engine (e.g. 1.0 EcoBoost)"><input id="vReg" type="text" placeholder="UK reg (for recall check)">
+    </div>
     <div class="row">
       <button id="btnAiSave">Save</button>
       <span id="aiStatus" class="note" style="align-self:center;">Not configured</span>
@@ -824,7 +827,8 @@
   function aiConfigured(){ return !!(aiBase && aiToken); }
   function vehicleInfo(){
     return { make: $('vMake').value.trim() || undefined, model: $('vModel').value.trim() || undefined,
-             year: parseInt($('vYear').value, 10) || undefined };
+             year: parseInt($('vYear').value, 10) || undefined, engine: $('vEngine').value.trim() || undefined,
+             reg: $('vReg').value.replace(/\s+/g, '').toUpperCase() || undefined };
   }
   function refreshAiButtons(){
     $('aiStatus').textContent = aiConfigured() ? (aiVehicleId ? 'Ready - vehicle #' + aiVehicleId : 'Ready - scan once to register the car') : 'Not configured';
@@ -869,8 +873,35 @@
         esc(recs.when_to_see_mechanic || '') + '</div>';
     }
     if (d.note) h += `<div class="note">${esc(d.note)}</div>`;
+    h += renderBulletinCheck(d.bulletin_check);
     $('aiOut').innerHTML = h;
   }
+
+  function renderBulletinCheck(bc){
+    if (!bc || !(bc.searches || []).length) return '';
+    const link = (url, text) => `<a href="${esc(url)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(text)}</a>`;
+    let h = `<div class="panel" style="margin:10px 0 0; padding:10px; background:var(--panel2)">
+      <b>Check bulletins${bc.priority === 'high' ? ' (recommended first)' : ''}</b>`;
+    if (bc.reasons && bc.reasons.length) h += `<div class="note">${bc.reasons.map(esc).join('<br>')}</div>`;
+    h += '<div class="note" style="margin-top:6px">Search for:</div>' + bc.searches.map(x =>
+      `<div class="code-row"><b>${esc(x.code)}</b><div style="flex:1"><code style="font-size:12px">${esc(x.query)}</code></div>
+       <button class="copyq" data-q="${esc(x.query)}" style="padding:4px 8px; font-size:12px">Copy</button></div>`).join('');
+    h += '<div class="note" style="margin-top:6px">In: ' + (bc.sources || []).map(src =>
+      src.url ? link(src.url, src.name) : esc(src.name)).join(' · ') + '</div>';
+    const rc = bc.recall_check || {};
+    h += `<div class="note">Recalls: ${rc.registration ? link(rc.by_registration, 'DVSA check for ' + rc.registration) : link(rc.by_make_model || '#', 'DVSA recall check (make/model/year)')}</div>`;
+    if ((bc.notes || []).length) h += '<div class="note" style="margin-top:6px"><b>Your bulletin notes:</b><br>' + bc.notes.map(n =>
+      `${esc(n.source)} ${esc(n.reference || '')}: ${esc(n.title || n.summary)} (${n.applies === true ? 'applies' : n.applies === false ? 'does not apply' : 'unconfirmed'})`).join('<br>') + '</div>';
+    h += `<div class="note" style="margin-top:6px">${esc(bc.reminder || '')} Record findings in the web panel.</div></div>`;
+    return h;
+  }
+  $('aiOut').addEventListener('click', e => {
+    const b = e.target.closest('.copyq'); if (!b) return;
+    const q = b.dataset.q;
+    (navigator.clipboard ? navigator.clipboard.writeText(q) : Promise.reject()).then(
+      () => { b.textContent = 'Copied'; setTimeout(() => b.textContent = 'Copy', 1500); },
+      () => prompt('Copy this search:', q));
+  });
 
   async function aiUploadRecording(){
     try {
@@ -926,6 +957,7 @@
   $('aiToken').value = aiToken;
   const savedVehicle = JSON.parse(localStorage.getItem('obd_ai_vinfo') || '{}');
   $('vMake').value = savedVehicle.make || ''; $('vModel').value = savedVehicle.model || ''; $('vYear').value = savedVehicle.year || '';
+  $('vEngine').value = savedVehicle.engine || ''; $('vReg').value = savedVehicle.reg || '';
   refreshAiButtons();
   $('btnAiSave').onclick = () => {
     aiBase = $('aiBase').value.trim().replace(/\/+$/, '');

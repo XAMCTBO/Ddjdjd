@@ -48,6 +48,7 @@
       <details style="margin-top:8px"><summary class="muted">Add vehicle</summary>
         <div class="row" style="margin-top:6px"><input id="vMake" placeholder="Make"><input id="vModel" placeholder="Model"></div>
         <div class="row" style="margin-top:6px"><input id="vYear" placeholder="Year"><input id="vKm" placeholder="km/day"></div>
+        <div class="row" style="margin-top:6px"><input id="vEngine" placeholder="Engine"><input id="vReg" placeholder="UK reg"></div>
         <button style="margin-top:6px;width:100%" id="btnAddVehicle">Add</button>
       </details>
     </div>
@@ -74,6 +75,24 @@
         <select id="repLang"><option value="en">English</option><option value="uk">Українська</option></select>
         <button id="btnReport" disabled>Open report (PDF)</button>
       </div>
+    </div>
+    <div class="panel">
+      <h2>Service bulletins and recalls</h2>
+      <div id="bulletins" class="muted">Pick a vehicle.</div>
+      <details style="margin-top:10px"><summary class="muted">Record what you found (in your own words)</summary>
+        <div class="row" style="margin-top:6px">
+          <select id="bSource"></select>
+          <input id="bRef" placeholder="Reference / bulletin no.">
+          <input id="bCodes" placeholder="Codes, e.g. P0016 P0011">
+        </div>
+        <input id="bTitle" placeholder="Short title" style="margin-top:6px">
+        <textarea id="bSummary" rows="3" maxlength="1200" placeholder="What it says, in your own words (not the full text)" style="margin-top:6px"></textarea>
+        <input id="bAction" placeholder="Fix / action it recommends" style="margin-top:6px">
+        <div class="row" style="margin-top:6px">
+          <select id="bApplies"><option value="">Applies? not confirmed</option><option value="yes">Applies to this car</option><option value="no">Does not apply</option></select>
+          <button class="primary" id="btnNote" disabled>Save note</button>
+        </div>
+      </details>
     </div>
     <div class="panel">
       <h2>Predictions</h2>
@@ -140,6 +159,7 @@
       data.sessions.slice().reverse().map(s => `<tr><td>${s.id}</td><td>${new Date(s.started*1000).toLocaleString()}</td>
         <td>${esc((s.scan.all_codes||[]).join(', ') || '-')}</td><td>${s.summary.trim_warm_b1 ?? '-'}</td><td>${s.summary.coolant_max ?? '-'}</td></tr>`).join('') + '</table>'
       : 'No sessions yet.';
+    loadBulletins();
     if (data.diagnosis) renderDiagnosis(data.diagnosis, data.recommendations);
     else $('diagnosis').textContent = 'Run a scan from the phone to see a diagnosis here.';
     $('chatlog').innerHTML = '';
@@ -155,6 +175,42 @@
       (recs?.steps?.length ? '<h3 style="font-size:13px">Action plan</h3><ol>' + recs.steps.map(s => `<li>${esc(s.title)} <span class="muted">${esc(s.est_cost_usd)}</span></li>`).join('') + '</ol>' : '');
   }
 
+  async function loadBulletins(){
+    const el = $('bulletins');
+    try {
+      const bc = await api(`/api/vehicles/${vehicleId}/bulletins`);
+      const link = (u, t) => `<a href="${esc(u)}" target="_blank" rel="noopener" style="color:var(--accent)">${esc(t)}</a>`;
+      $('bSource').innerHTML = (bc.sources || []).concat([{id:'dvsa', name:'DVSA recall check'}, {id:'dealer', name:'Dealer / other'}])
+        .map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+      $('btnNote').disabled = false;
+      let h = '';
+      if (!bc.searches.length) h += '<p>No codes in the latest scan. You can still record notes below.</p>';
+      else {
+        h += `<p>${bc.recommended ? `<b>Check ${esc(bc.unchecked.join(', '))}</b>` : 'All current codes have been checked.'}
+              ${bc.priority === 'high' ? '<span class="sev high">priority</span>' : ''}</p>`;
+        if (bc.reasons.length) h += '<p class="muted">' + bc.reasons.map(esc).join('<br>') + '</p>';
+        h += '<table>' + bc.searches.map(x => `<tr><td><b>${esc(x.code)}</b></td><td><code>${esc(x.query)}</code></td></tr>`).join('') + '</table>';
+      }
+      h += '<p class="muted">Sources: ' + (bc.sources || []).map(s => s.url ? link(s.url, s.name) : esc(s.name) + ' (no link set)').join(' · ') + '</p>';
+      const rc = bc.recall_check;
+      h += '<p class="muted">Recalls: ' + (rc.registration ? link(rc.by_registration, 'DVSA check (reg ' + rc.registration + ')') : link(rc.by_make_model, 'DVSA recall check by make/model/year')) + '</p>';
+      if (bc.notes.length) h += '<h3 style="font-size:13px">Your notes</h3><table>' + bc.notes.map(n =>
+        `<tr><td>${esc(n.source)} ${esc(n.reference)}</td><td>${esc((n.codes||[]).join(', '))}</td><td><b>${esc(n.title)}</b> ${esc(n.summary)}${n.action ? '<br><i>' + esc(n.action) + '</i>' : ''}</td>
+         <td>${n.applies === true ? 'applies' : n.applies === false ? 'does not apply' : 'unconfirmed'}</td></tr>`).join('') + '</table>';
+      h += `<p class="muted">${esc(bc.reminder)}</p>`;
+      el.innerHTML = h;
+    } catch(e){ el.textContent = e.message; }
+  }
+  $('btnNote').onclick = async () => {
+    try {
+      await api(`/api/vehicles/${vehicleId}/bulletins`, {source: $('bSource').value, reference: $('bRef').value, codes: $('bCodes').value,
+        title: $('bTitle').value, summary: $('bSummary').value, action: $('bAction').value,
+        applies: $('bApplies').value === 'yes' ? true : $('bApplies').value === 'no' ? false : null});
+      ['bRef','bCodes','bTitle','bSummary','bAction'].forEach(id => $(id).value = '');
+      loadBulletins();
+    } catch(e){ alert(e.message); }
+  };
+
   function addMsg(role, text, actions){
     const d = document.createElement('div'); d.className = 'msg ' + role;
     d.innerHTML = (role === 'user' ? '› ' : '') + esc(text) + (actions || []).map(a =>
@@ -167,7 +223,8 @@
   $('btnLogin').onclick = () => { token = $('token').value.trim(); loadMe(); };
   $('btnProfile').onclick = () => api('/api/profile', {diy_level: $('diy').value, tools: $('tools').value.split(',').map(s => s.trim()).filter(Boolean)});
   $('btnAddVehicle').onclick = async () => {
-    const v = await api('/api/vehicles', {make: $('vMake').value, model: $('vModel').value, year: +$('vYear').value || undefined, km_per_day: +$('vKm').value || undefined});
+    const v = await api('/api/vehicles', {make: $('vMake').value, model: $('vModel').value, year: +$('vYear').value || undefined,
+      km_per_day: +$('vKm').value || undefined, engine: $('vEngine').value || undefined, reg: $('vReg').value || undefined});
     selectVehicle(v.id);
   };
   $('btnLookup').onclick = async () => {

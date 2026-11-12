@@ -140,6 +140,11 @@ class Store:
         r = self._q(sql + " ORDER BY id DESC LIMIT 1", args).fetchone()
         return json.loads(r["data"]) if r else None
 
+    def results(self, vehicle_id: int, agent: str, limit: int = 100) -> list[dict]:
+        rows = self._q("SELECT id, data, created FROM results WHERE vehicle_id=? AND agent=? ORDER BY id DESC LIMIT ?",
+                       (vehicle_id, agent, limit)).fetchall()
+        return [{"id": r["id"], "created": r["created"], **json.loads(r["data"])} for r in reversed(rows)]
+
     # ---------------------------------------------------------------- chat
     def add_chat(self, vehicle_id: int, role: str, content) -> None:
         self._q("INSERT INTO chat(vehicle_id,role,content,created) VALUES(?,?,?,?)",

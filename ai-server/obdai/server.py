@@ -165,7 +165,9 @@ def make_handler(orch: Orchestrator):
         def add_vehicle(self):
             u = self.user()
             b = self.body()
-            info = {k: b[k] for k in ("make", "model", "year", "engine", "fuel", "odometer_km", "km_per_day", "name") if k in b}
+            info = {k: b[k] for k in ("make", "model", "year", "engine", "fuel", "odometer_km", "km_per_day", "name", "reg") if k in b}
+            if "reg" in info:
+                info["reg"] = re.sub(r"\s+", "", str(info["reg"])).upper()[:10]
             vid = store.upsert_vehicle(u["token"], info, b.get("id"), b.get("vin"))
             self.json_out(store.vehicle(vid))
 
@@ -199,6 +201,21 @@ def make_handler(orch: Orchestrator):
         @route("POST", r"/api/vehicles/(\d+)/chat")
         def chat(self, vid):
             self.json_out(orch.chat(self.user(), vid, str(self.body().get("message", ""))))
+
+        # ------------------------------------------------------------ bulletins
+        @route("GET", r"/api/vehicles/(\d+)/bulletins")
+        def bulletin_check(self, vid):
+            codes = [c for c in (self.query.get("codes") or [""])[0].replace(",", " ").split() if c]
+            self.json_out(orch.bulletin_check(self.user(), vid, codes or None))
+
+        @route("POST", r"/api/vehicles/(\d+)/bulletins")
+        def bulletin_note(self, vid):
+            self.json_out(orch.add_bulletin_note(self.user(), vid, self.body()))
+
+        @route("GET", r"/api/bulletin-sources")
+        def bulletin_sources(self):
+            from .knowledge import bulletins
+            self.json_out({"sources": bulletins.load_sources(), "recall_check": bulletins.DVSA})
 
         # ------------------------------------------------------------ knowledge
         @route("GET", r"/api/dtc/([A-Za-z0-9]{5})")

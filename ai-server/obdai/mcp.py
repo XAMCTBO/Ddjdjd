@@ -32,6 +32,19 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "vehicle_history", "description": "Session summaries and the latest diagnosis for a vehicle.",
      "inputSchema": {"type": "object", "properties": {"vehicle_id": {"type": "integer"}}, "required": ["vehicle_id"]}},
+    {"name": "bulletin_check",
+     "description": "What to search in the user's bulletin sources (ALLDATA Europe, Autodata, HaynesPro) and the DVSA recall check for a vehicle's codes, why, and the user's existing bulletin notes.",
+     "inputSchema": {"type": "object", "properties": {"vehicle_id": {"type": "integer"},
+                                                      "codes": {"type": "array", "items": {"type": "string"}}},
+                     "required": ["vehicle_id"]}},
+    {"name": "record_bulletin_note",
+     "description": "Save a short note, in your own words, about a service bulletin or recall checked for a vehicle. Never paste the bulletin's full text.",
+     "inputSchema": {"type": "object", "properties": {
+         "vehicle_id": {"type": "integer"}, "source": {"type": "string"}, "reference": {"type": "string"},
+         "title": {"type": "string"}, "codes": {"type": "array", "items": {"type": "string"}},
+         "summary": {"type": "string", "description": "max 1200 chars, own words"},
+         "applies": {"type": "boolean"}, "action": {"type": "string"}},
+         "required": ["vehicle_id", "source"]}},
     {"name": "predict_failures", "description": "Trend-based failure predictions for a vehicle (needs >= 3 sessions).",
      "inputSchema": {"type": "object", "properties": {"vehicle_id": {"type": "integer"}}, "required": ["vehicle_id"]}},
 ]
@@ -73,6 +86,10 @@ def call_tool(orch, user: dict, name: str, args: dict):
         return {"vehicle": v, "sessions": [{"id": s["id"], "started": s["started"], "codes": s["scan"].get("all_codes", []),
                                             "summary": s["summary"]} for s in orch.store.sessions(v["id"])],
                 "latest_diagnosis": orch.store.latest_result(v["id"], "dtc_analyzer")}
+    if name == "bulletin_check":
+        return orch.bulletin_check(user, args["vehicle_id"], args.get("codes"))
+    if name == "record_bulletin_note":
+        return orch.add_bulletin_note(user, args["vehicle_id"], args)
     if name == "predict_failures":
         return orch.predict(user, args["vehicle_id"])
     raise KeyError(f"unknown tool {name}")

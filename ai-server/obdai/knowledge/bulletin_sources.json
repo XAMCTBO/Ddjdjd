@@ -1,0 +1,29 @@
+{
+  "_comment": "Your bulletin sources. Fill in 'url' and 'how' with the real way in once known. Set enabled=false to hide one. Never put passwords here.",
+  "sources": [
+    {
+      "id": "alldata_eu",
+      "name": "ALLDATA Europe",
+      "enabled": true,
+      "url": null,
+      "how": ["Open ALLDATA Europe and select the vehicle (registration or VIN if supported, else make/model/engine).",
+              "Look in the vehicle's technical service bulletins / known issues section and search for the fault code."]
+    },
+    {
+      "id": "autodata",
+      "name": "Autodata (Europe)",
+      "enabled": true,
+      "url": null,
+      "how": ["Open Autodata and select the vehicle.",
+              "Look in the vehicle's technical bulletins / known fixes section and search for the fault code."]
+    },
+    {
+      "id": "haynespro",
+      "name": "HaynesPro (Europe)",
+      "enabled": true,
+      "url": null,
+      "how": ["Open HaynesPro and select the vehicle.",
+              "Look in the vehicle's technical bulletins / known issues section and search for the fault code."]
+    }
+  ]
+}

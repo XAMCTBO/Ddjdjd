@@ -18,14 +18,14 @@ import os
 import re
 
 from .agents.chat import ChatAgent
-from .agents.dtc_analyzer import DTCAnalyzerAgent
+from .agents.dtc_analyzer import DTCAnalyzerAgent, history_codes
 from .agents.evidence import ambient_temp
 from .agents.obd_reader import OBDReaderAgent
 from .agents.prediction import PredictionAgent, summarize_samples
 from .agents.rag import CODE, RAGAgent
 from .agents.recommendation import RecommendationAgent
 from .agents.report import ReportAgent
-from .knowledge import dtc_catalog
+from .knowledge import bulletins, dtc_catalog
 from .llm import LLM
 from .storage import Store
 
@@ -91,7 +91,10 @@ class Orchestrator:
         samples = payload.get("samples") or []
         summary = summarize_samples(samples)
         sid = self.store.add_session(vid, decoded, samples, summary, payload.get("started"))
-        diagnosis = self.analyzer.analyze(decoded, vehicle, history)
+        notes = self.bulletin_notes(vid)
+        diagnosis = self.analyzer.analyze(decoded, vehicle, history, notes)
+        diagnosis["bulletin_check"] = bulletins.build_check(
+            [c["code"] for c in diagnosis.get("codes", [])], vehicle, history_codes(history), notes)
         self.store.save_result(vid, "dtc_analyzer", diagnosis, sid)
         full = self._gate(user, "recommendation_full")
         recs = self.recommender.recommend(diagnosis, decoded, user["profile"], ambient_temp(decoded), basic=not full)
@@ -129,7 +132,26 @@ class Orchestrator:
             self.store.latest_result(v["id"], "dtc_analyzer", sid),
             self.store.latest_result(v["id"], "recommendation", sid),
             self.store.latest_result(v["id"], "prediction"),
-            sessions, mode=mode, lang=lang)
+            sessions, mode=mode, lang=lang, bulletin_notes=self.bulletin_notes(v["id"]))
+
+    # ---------------------------------------------------------------- bulletins
+    def bulletin_notes(self, vehicle_id: int) -> list[dict]:
+        return self.store.results(vehicle_id, "bulletin_note")
+
+    def add_bulletin_note(self, user: dict, vehicle_id, payload: dict) -> dict:
+        v = self._vehicle(user, vehicle_id)
+        note = bulletins.clean_note(payload)
+        nid = self.store.save_result(v["id"], "bulletin_note", note)
+        return {"id": nid, **note}
+
+    def bulletin_check(self, user: dict, vehicle_id, codes: list[str] | None = None) -> dict:
+        v = self._vehicle(user, vehicle_id)
+        # earlier sessions only: the latest scan is the one being checked, not history
+        history = self.store.sessions(v["id"], with_samples=False)[:-1]
+        if not codes:
+            diag = self.store.latest_result(v["id"], "dtc_analyzer") or {}
+            codes = [c["code"] for c in diag.get("codes", [])]
+        return bulletins.build_check([c.upper() for c in codes], v, history_codes(history), self.bulletin_notes(v["id"]))
 
     def lookup(self, code: str) -> dict:
         return dtc_catalog.lookup(code)
@@ -169,6 +191,7 @@ class Orchestrator:
                    "diagnosis": self.store.latest_result(v["id"], "dtc_analyzer"),
                    "recommendations": self.store.latest_result(v["id"], "recommendation"),
                    "predictions": self.store.latest_result(v["id"], "prediction"),
+                   "bulletin_notes": self.bulletin_notes(v["id"])[-10:],
                    "recent_session_summaries": [s["summary"] for s in sessions]}
             if self.PREDICT_INTENT.search(message) and ctx["predictions"] is None \
                     and LIMITS.get(user["tier"], LIMITS["free"]).get("prediction") != 0:
